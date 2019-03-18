@@ -45,5 +45,6 @@ mod tests {
         assert_pavo_ok("nil; (nil); ((nil))", Value::new_nil());
         assert_pavo_ok("// comment\n nil //this comment ends with eof", Value::new_nil());
         assert_pavo_ok("nil//", Value::new_nil());
+        assert_pavo_ok("", Value::new_nil());
     }
 }
