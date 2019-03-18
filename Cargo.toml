@@ -1,0 +1,11 @@
+[package]
+name = "pavo-lang-rs"
+version = "0.1.0"
+authors = ["AljoschaMeyer <mail@aljoscha-meyer.de>"]
+edition = "2018"
+
+[dependencies]
+gc = "0.3.2"
+gc_derive = "0.3.2"
+nom = "4.2.2"
+nom_locate = "0.3.1"
