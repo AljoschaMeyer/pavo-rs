@@ -157,3 +157,12 @@ That was quite a lot of effort for language whose only value is `nil`. But we sh
 ## Control Flow
 
 We'll add control flow via (mostly) conventional `if`/`else` expression. But for those, we first need to implement boolean values.
+
+```rust
+enum _Value {
+    Nil,
+    Bool(bool),
+}
+```
+
+The literals for bools are `true` and `false`, these also denote the two values of type `bool`.

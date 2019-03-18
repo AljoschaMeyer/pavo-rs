@@ -6,11 +6,16 @@ use gc_derive::{Trace, Finalize};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Trace, Finalize)]
 enum _Value {
     Nil,
+    Bool(bool),
 }
 
 impl _Value {
     fn new_nil() -> _Value {
         _Value::Nil
+    }
+
+    fn new_bool(b: bool) -> _Value {
+        _Value::Bool(b)
     }
 }
 
@@ -27,6 +32,10 @@ pub struct Value(_Value);
 impl Value {
     pub fn new_nil() -> Value {
         Value(_Value::new_nil())
+    }
+
+    pub fn new_bool(b: bool) -> Value {
+        Value(_Value::new_bool(b))
     }
 }
 

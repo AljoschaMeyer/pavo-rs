@@ -7,10 +7,15 @@ An imperative, dynamically typed, event-loop based programming language. Featuri
 Pavo is dynamically typed. Variables bindings don't have statically known types, instead all values carry their type with them at runtime. The possible types are:
 
 - `nil`: The unit type.
+- `bool`: Either `true` or `false`.
 
 ### Nil
 
 The `nil` type only holds a single value: `nil` (which is also the literal of the value).
+
+### Bool
+
+The `bool` type holds two values: `true` and `false` (which are also the literals of the values).
 
 ## Statements, Expressions and Execution
 

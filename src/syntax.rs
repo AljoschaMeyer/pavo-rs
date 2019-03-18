@@ -12,6 +12,7 @@ pub struct Expression<'a>(pub Span<'a>, pub _Expression);
 
 pub enum _Expression {
     Nil,
+    Bool(bool),
 }
 
 pub struct Statement<'a>(pub Span<'a>, pub _Statement<'a>);

@@ -47,4 +47,10 @@ mod tests {
         assert_pavo_ok("nil//", Value::new_nil());
         assert_pavo_ok("", Value::new_nil());
     }
+
+    #[test]
+    fn test_bools() {
+        assert_pavo_ok("true", Value::new_bool(true));
+        assert_pavo_ok("false", Value::new_bool(false));
+    }
 }

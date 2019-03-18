@@ -52,15 +52,35 @@ named!(kw_nil(Span) -> (), do_parse!(
     (())
 ));
 
+named!(kw_true(Span) -> (), do_parse!(
+    tag!("true") >>
+    not!(take_while1!(is_id_char)) >>
+    ws0 >>
+    (())
+));
+
+named!(kw_false(Span) -> (), do_parse!(
+    tag!("false") >>
+    not!(take_while1!(is_id_char)) >>
+    ws0 >>
+    (())
+));
+
 named!(exp_nil(Span) -> Expression, do_parse!(
     pos: position!() >>
     kw_nil >>
     (Expression(pos, _Expression::Nil))
 ));
 
+named!(exp_bool(Span) -> Expression, do_parse!(
+    pos: position!() >>
+    b: alt!(value!(true, kw_true) | value!(false, kw_false)) >>
+    (Expression(pos, _Expression::Bool(b)))
+));
+
 // Expressions that do not contain other expressions.
 named!(exp_atomic(Span) -> Expression, alt!(
-    exp_nil
+    exp_nil | exp_bool
 ));
 
 named!(exp(Span) -> Expression, alt!(

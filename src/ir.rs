@@ -58,6 +58,9 @@ pub fn ast_to_ir(ast: &Vec<Statement>) -> IrChunk {
             _Statement::Expression(Expression(_, _Expression::Nil)) => {
                 basic_blocks[0].push(Stmt::Literal(Value::new_nil(), Addr::reg(0)));
             }
+            _Statement::Expression(Expression(_, _Expression::Bool(b))) => {
+                basic_blocks[0].push(Stmt::Literal(Value::new_bool(b), Addr::reg(0)));
+            }
         }
     }
     basic_blocks[0].push(Stmt::Return(Addr::reg(0)));
