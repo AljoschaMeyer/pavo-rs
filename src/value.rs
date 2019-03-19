@@ -17,6 +17,13 @@ impl _Value {
     fn new_bool(b: bool) -> _Value {
         _Value::Bool(b)
     }
+
+    fn truthy(&self) -> bool {
+        match self {
+            _Value::Nil | _Value::Bool(false) => false,
+            _ => true,
+        }
+    }
 }
 
 impl Default for _Value {
@@ -36,6 +43,10 @@ impl Value {
 
     pub fn new_bool(b: bool) -> Value {
         Value(_Value::new_bool(b))
+    }
+
+    pub fn truthy(&self) -> bool {
+        self.0.truthy()
     }
 }
 

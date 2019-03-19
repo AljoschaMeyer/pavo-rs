@@ -9,10 +9,8 @@ mod parse;
 mod value;
 // The context in which a pavo computation is evaluated.
 mod context;
-// An intermediate representation used during compilation from syntax trees into executable vm code.
+// An intermediate representation of pavo code that gets interpreted.
 mod ir;
-// A virtual machine executing the instructions into which this implementation compiles pavo code.
-mod vm;
 
 use context::{Computation, Context, PavoResult};
 
@@ -21,8 +19,7 @@ pub fn execute_pavo<'s>(src: &'s str) -> Result<PavoResult, Err<LocatedSpan<Comp
         .map(|(_, ast)| {
             let mut cx = Context::new();
             let ir_chunk = ir::ast_to_ir(&ast);
-            let vm_chunk = ir::ir_to_vm(ir_chunk);
-            return vm_chunk.compute(vec![], &mut cx);
+            return ir_chunk.compute(vec![], &mut cx);
         })
 }
 
@@ -35,7 +32,7 @@ mod tests {
         match execute_pavo(src) {
             Err(err) => panic!("Unexpected parser error: {:?}", err),
             Ok(Err(err)) => panic!("Unexpected exception: {:?}", err),
-            Ok(Ok(val)) => assert_eq!(expected, val),
+            Ok(Ok(val)) => assert_eq!(val, expected),
         }
     }
 
@@ -52,5 +49,15 @@ mod tests {
     fn test_bools() {
         assert_pavo_ok("true", Value::new_bool(true));
         assert_pavo_ok("false", Value::new_bool(false));
+    }
+
+    #[test]
+    fn test_if() {
+        assert_pavo_ok("if true {}", Value::new_nil());
+        assert_pavo_ok("if true { false }", Value::new_bool(false));
+        assert_pavo_ok("if false { false }", Value::new_nil());
+        assert_pavo_ok("if false { false } else { false; true }", Value::new_bool(true));
+        assert_pavo_ok("if false { false } else if true { true }", Value::new_bool(true));
+        assert_pavo_ok("if if true { false } { false } else { true }", Value::new_bool(true));
     }
 }

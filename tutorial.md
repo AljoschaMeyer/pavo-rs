@@ -44,10 +44,8 @@ mod parse;
 mod value;
 // The context in which a pavo computation is evaluated.
 mod context;
-// An intermediate representation used during compilation from syntax trees into executable vm code.
+// An intermediate representation of pavo code that gets interpreted.
 mod ir;
-// A virtual machine executing the instructions into which this implementation compiles pavo code.
-mod vm;
 ```
 
 AST nodes are defined as rust enums [here](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/syntax.rs) and include source code locations. For parsing, we are hand-writing a [recursive descent parser](https://en.wikipedia.org/wiki/Recursive_descent_parser) using the parser combinator crate [nom](https://crates.io/crates/nom) (version 4.x.x). The parser implementation is [here](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/parse.rs).
@@ -94,47 +92,101 @@ pub trait Computation {
 }
 ```
 
-The pavo interpreter works by parsing some code into a syntax tree and then compiling it into a sequence of instructions for a virtual machine, defined [in this file](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/vm.rs). In this initial subset of pavo, the state of the vm consists of the [vm code](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/vm.rs#L16), an array of [`registers`](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/vm.rs#L37) where `Value`s can be temporarily stored, and a [program counter](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/vm.rs#L35) (`pc`) indicating which instruction to run next. All the vm then needs to do is to [read and execute instructions in a loop](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/vm.rs#L106).
+The pavo interpreter works by parsing some code into a syntax tree and then compiling it into a sequence of intermediate representation instructions. In this initial subset of pavo, the state of the interpreter consists of the [ir instructions], an array of `registers` where `Value`s can be temporarily stored, and a program counter (`pc`) indicating which instruction to run next. All the interpreter then needs to do is to read and execute instructions in a loop.
 
 Here's our initial instruction set:
 
 ```rust
-// A single instruction of vm code.
+/// A single instruction of the ir.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Instruction {
-    // Write the given literal `Value` to the address.
+enum Instruction {
+    /// Do nothing but evaluate to the given value and store it in the given location.
     Literal(Value, Addr),
-    // Return the value at the address.
-    Return(Addr),
+    /// Jump to the given basic block. If the usize is `BB_RETURN`, return from the function instead.
+    Jump(usize),
+    /// Jump to the first basic block if the value at the Addr is truthy, else to the second one.
+    CondJump(Addr, usize, usize),
 }
+use Instruction::*;
+
+// If this is given as an unconditional jump address, return from the function instead.
+const BB_RETURN: usize = std::usize::MAX;
 ```
 
 An `Addr` at this point just points to a register:
 
 ```rust
-
-/// Addresses a storage slot where a computation can write `Value`s to (or from where to read them).
+// Addresses a storage slot where a computation can write `Value`s to (or from where to read them).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Addr {
-    /// Address of a register in a `LocalState`.
+enum Addr {
+    // Address of a register in a `LocalState`.
+    //
+    // Register 0 is used for passing data from one statement to the next.
+    // Additional registers are used when multiple values need to be kept in memory simutaneously,
+    // e.g. all the arguments that are passed to a function call.
     Register(usize),
 }
 ```
 
 Later, addresses will be able to refer to variables stored on the heap (in the environment of a closure).
 
-That's pretty much it. Since the vm operates on pavo `Value`s directly, it is (and will stay) fairly simple. The more interesting part is compiling from pavo source ASTs into vm instructions. To help with this, there's the [intermediate representation](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/ir.rs) (*ir*).
+When executing code, there is some `LocalState` involved:
 
-The ir represents programs as [basic blocks](https://en.wikipedia.org/wiki/Basic_block) of statements. The [statements themselves](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/ir.rs#L44) are very similar to the instructions of the virtual machine. The main difference is that the vm stores instructions as a sequence, whereas the ir [stores](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/ir.rs#L16) them as a [control flow graph](https://en.wikipedia.org/wiki/Control-flow_graph). Compiling [ir into vm code](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/ir.rs#L71) is mostly about flattening the instructions into a vector. This isn't implemented yet, we'll wait with that until we added actual control flow to the language. The translation from [ast into ir](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/ir.rs#L52) is slightly more interesting, but not at the moment. Right now, it just converts sequences of expressions into sequences of `Literal` instructions.
+```rust
+// The local state upon which the instructions to operate. It is local to each invocation of
+// `Computation::compute`.
+struct LocalState {
+    // Index into the graph of instructions that indicates which instruction to execute next.
+    // "pc" stands for "program counter".
+    //
+    // First usize is the basic block, second one the offset in the basic block.
+    pc: (usize, usize),
+    // Temporary storage slots for `Value`s.
+    registers: Box<[Value]>,
+}
+```
+
+The interpreter runs instructions in a loop, continuously incrementing the program counter.
+
+```rust
+fn compute<Args: IntoIterator<Item = Value>>(&self, _: Args, _: &mut Context) -> PavoResult {
+    let mut state = LocalState::new(self);
+
+    loop {
+        state.pc.1 += 1;
+        match &self.basic_blocks[state.pc.0][state.pc.1 - 1] {
+            Literal(val, dst) => dst.store(val.clone(), &mut state),
+
+            Jump(block) => {
+                if *block == BB_RETURN {
+                    // register 0 holds the evaluation result of the previously executed statement
+                    return Ok(Addr::reg(0).load(&state));
+                } else {
+                    state.pc = (*block, 0);
+                }
+            }
+
+            CondJump(cond, then_block, else_block) => {
+                if cond.load(&state).truthy() {
+                    state.pc = (*then_block, 0);
+                } else {
+                    state.pc = (*else_block, 0);
+                }
+            }
+        }
+    }
+}
+```
+
+That's pretty much it. Since the interpreter operates on pavo `Value`s directly, it is (and will stay) fairly simple.
 
 Putting it all together: To run a pavo program, we
 
 - [parse](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/parse.rs#L94) the source code into an [AST](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/syntax.rs)
-- we [transform](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/ir.rs#L52) the AST into an intermediate representation of [basic blocks](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/ir.rs#L17)
-- we [transform](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/ir.rs#L71) the ir into [vm code](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/vm.rs#L14)
-- we [interpret](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/vm.rs#L103) the code
+- we transform the AST into an intermediate representation of basic blocks
+- we interpret the ir instructions
 
-Or in [code](https://github.com/AljoschaMeyer/pavo-rs/blob/1c53f9db61bc9fc2b775a8263e3aaaa3467fb4fc/src/lib.rs#L19):
+Or in code:
 
 ```rust
 pub fn execute_pavo<'s>(src: &'s str) -> Result<PavoResult, Err<LocatedSpan<CompleteStr<'s>>>> {
@@ -142,8 +194,7 @@ pub fn execute_pavo<'s>(src: &'s str) -> Result<PavoResult, Err<LocatedSpan<Comp
         .map(|(_, ast)| {
             let mut cx = Context::new();
             let ir_chunk = ir::ast_to_ir(&ast);
-            let vm_chunk = ir::ir_to_vm(ir_chunk);
-            return vm_chunk.compute(vec![], &mut cx);
+            return ir_chunk.compute(vec![], &mut cx);
         })
 }
 
@@ -156,7 +207,7 @@ That was quite a lot of effort for language whose only value is `nil`. But we sh
 
 ## Control Flow
 
-We'll add control flow via (mostly) conventional `if`/`else` expression. But for those, we first need to implement boolean values.
+We'll add control flow via (mostly) conventional `if`/`else` statements. For those to make sense, we first implement boolean values.
 
 ```rust
 enum _Value {
@@ -166,3 +217,130 @@ enum _Value {
 ```
 
 The literals for bools are `true` and `false`, these also denote the two values of type `bool`.
+
+An if-expression consists of the keyword `if`, followed by a *condition* (an expression), followed by a sequence of statements delimited by curly braces, optionally followed by the keyword `else` and another block of brace-delimited statements. The `else` keyword may also be followed by a *blocky expression* instead (without the need for curly braces). The only *blocky expressions* at this point are if-expressions. An `if` expression without an `else` clause is treated as if it had an `else` clause of zero statements.
+
+Execution of an if-expression begins by evaluating the *condition*. If it is *truthy* (neither `nil` nor `false`), then evaluate the following block. The if-expression evaluates to the same value as the last statement of the block. If the condition is not truthy, then evaluate the else-block instead. The if-expression evaluates to the same value as the last statement of the block (or to the value of the blocky expression). Empty blocks evaluate to `nil`.
+
+In general, any semicolon-separated sequence of statements evaluates to the value to which the last of those statements evaluated, and the empty sequence of statements evaluates to `nil`.
+
+```pavo
+// evaluates to nil
+if true {
+  if false {}
+} else if true {
+  false
+}
+```
+
+The instruction set already covers everything we need (jumps and conditional jumps), all that remains is compiling the pavo syntax into ir. To help with managing basic blocks, we define a helper struct, the `BBB` (BasicBlockBuilder):
+
+```rust
+// BasicBlockBuilder, a helper for constructing the graph of basic blocks.
+//
+// It provides a stateful api. There's the `current` block on which to work, and methods to modify
+// it.
+struct BBB {
+    // All basic blocks generated so far.
+    blocks: Vec<Vec<Instruction>>,
+    // Index of the currently active block.
+    current: usize,
+}
+
+impl BBB {
+    fn new() -> BBB {
+        BBB {
+            blocks: vec![vec![]],
+            current: 0,
+        }
+    }
+
+    // Create a new, empty basic block, and return it's id.
+    fn new_block(&mut self) -> usize {
+        self.blocks.push(vec![]);
+        return self.blocks.len() - 1;
+    }
+
+    // Set the block on which the BBB operates.
+    fn set_active_block(&mut self, bb: usize) {
+        self.current = bb;
+    }
+
+    // Append an instruction to the currently active block.
+    fn append(&mut self, inst: Instruction) {
+        self.blocks[self.current].push(inst);
+    }
+
+    // Consume the builder to create an IrChunk.
+    fn into_ir(self) -> IrChunk {
+        IrChunk {
+            basic_blocks: self.blocks,
+            num_registers: 1,
+        }
+    }
+}
+```
+
+With this helper, the translation of code is fairly straightforward, though slightly verbose:
+
+```rust
+// Convert a sequence of statements into instructions and basic blocks, using the given BBB.
+// As the last instruction, jump to the basic block `jump_to`.
+fn block_to_ir(block: &Box<[Statement]>, jump_to: usize, bbb: &mut BBB) {
+    for statement in block.iter() {
+        statement_to_ir(statement, bbb);
+    }
+
+    if block.len() == 0 {
+        bbb.append(Literal(Value::new_nil(), Addr::reg(0)));
+    }
+
+    bbb.append(Jump(jump_to));
+}
+
+// Convert a single statement into instructions and basic blocks, using the given BBB..
+fn statement_to_ir(statement: &Statement, bbb: &mut BBB) {
+    match statement.1 {
+        _Statement::Expression(ref exp) => exp_to_ir(exp, bbb),
+    }
+}
+
+// Convert a single expression into instructions and basic blocks, using the given BBB..
+fn exp_to_ir(exp: &Expression, bbb: &mut BBB) {
+    match exp.1 {
+        _Expression::Nil => {
+            bbb.append(Literal(Value::new_nil(), Addr::reg(0)));
+        }
+        _Expression::Bool(b) => {
+            bbb.append(Literal(Value::new_bool(b), Addr::reg(0)));
+        }
+        _Expression::If(ref cond, ref then_block, ref else_block) => {
+            exp_to_ir(cond, bbb);
+
+            let bb_then = bbb.new_block();
+            let bb_else = bbb.new_block();
+            let bb_cont = bbb.new_block();
+
+            bbb.append(CondJump(Addr::reg(0), bb_then, bb_else));
+
+            bbb.set_active_block(bb_then);
+            block_to_ir(then_block, bb_cont, bbb);
+
+            bbb.set_active_block(bb_else);
+            block_to_ir(else_block, bb_cont, bbb);
+
+            bbb.set_active_block(bb_cont);
+        }
+    }
+}
+```
+
+With all of this defined, translating an ast into ir only takes three lines of additional code:
+
+```rust
+let mut bbb = BBB::new();
+block_to_ir(ast, BB_RETURN, &mut bbb);
+return bbb.into_ir();
+```
+
+Wheew, that was quite a lot of code, but now we've got the very fundamentals of the interpreter done. Next, we'll add a few more control flow constructs to the language.

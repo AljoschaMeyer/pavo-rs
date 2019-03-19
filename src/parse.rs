@@ -7,7 +7,7 @@ use nom::{
     {value, tag, take_while1},
     {do_parse, alt, many0, many1, opt},
     {delimited, separated_list_complete},
-    {named, not},
+    {named, not, map},
     types::CompleteStr
 };
 use nom_locate::{LocatedSpan, position};
@@ -41,6 +41,10 @@ named!(ws1(Span) -> (), do_parse!(
     (())
 ));
 
+named!(semi(Span) -> (), do_parse!(tag!(";") >> ws0 >> (())));
+named!(lbrace(Span) -> (), do_parse!(tag!("{") >> ws0 >> (())));
+named!(rbrace(Span) -> (), do_parse!(tag!("}") >> ws0 >> (())));
+
 fn is_id_char(c: char) -> bool {
     return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c == '_');
 }
@@ -66,6 +70,20 @@ named!(kw_false(Span) -> (), do_parse!(
     (())
 ));
 
+named!(kw_if(Span) -> (), do_parse!(
+    tag!("if") >>
+    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
+    ws0 >>
+    (())
+));
+
+named!(kw_else(Span) -> (), do_parse!(
+    tag!("else") >>
+    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
+    ws0 >>
+    (())
+));
+
 named!(exp_nil(Span) -> Expression, do_parse!(
     pos: position!() >>
     kw_nil >>
@@ -83,6 +101,37 @@ named!(exp_atomic(Span) -> Expression, alt!(
     exp_nil | exp_bool
 ));
 
+named!(exp_if(Span) -> Expression, do_parse!(
+    pos: position!() >>
+    kw_if >>
+    cond: map!(exp, Box::new) >>
+    if_block: block >>
+    else_block: map!(
+        opt!(do_parse!(
+            kw_else >>
+            else_block: alt!(
+                block |
+                map!(exp_blocky, |e| {
+                    vec![Statement(e.0, _Statement::Expression(e))].into_boxed_slice()
+                })
+            ) >>
+            (else_block)
+        )),
+        |blck| {
+            match blck {
+                Some(stmts) => stmts,
+                None => vec![].into_boxed_slice(),
+            }
+        }
+    ) >>
+    (Expression(pos, _Expression::If(cond, if_block, else_block)))
+));
+
+// Expressions that can follow an `else` keyword without being enclosed in braces.
+named!(exp_blocky(Span) -> Expression, alt!(
+    exp_if
+));
+
 named!(exp(Span) -> Expression, alt!(
     // expression wrapped in parens
     do_parse!(
@@ -94,7 +143,8 @@ named!(exp(Span) -> Expression, alt!(
         ws0 >>
         (ex)
     ) |
-    exp_atomic
+    exp_atomic |
+    exp_blocky
 ));
 
 named!(stmt_exp(Span) -> Statement, do_parse!(
@@ -106,12 +156,14 @@ named!(stmt(Span) -> Statement, alt!(
     stmt_exp
 ));
 
-named!(stmts0(Span) -> Vec<Statement>, separated_list_complete!(
-    do_parse!(tag!(";") >> ws0 >> (())),
-    stmt
+named!(stmts0(Span) -> Box<[Statement]>, map!(
+    separated_list_complete!(semi, stmt),
+    Vec::into_boxed_slice
 ));
 
-named!(pub script(Span) -> Vec<Statement>, do_parse!(
+named!(block(Span) -> Box<[Statement]>, delimited!(lbrace, stmts0, rbrace));
+
+named!(pub script(Span) -> Box<[Statement]>, do_parse!(
     ws0 >>
     sts: stmts0 >>
     eof!() >>

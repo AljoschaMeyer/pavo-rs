@@ -8,11 +8,12 @@ use nom_locate::LocatedSpan;
 
 type Span<'a> = LocatedSpan<CompleteStr<'a>>;
 
-pub struct Expression<'a>(pub Span<'a>, pub _Expression);
+pub struct Expression<'a>(pub Span<'a>, pub _Expression<'a>);
 
-pub enum _Expression {
+pub enum _Expression<'a> {
     Nil,
     Bool(bool),
+    If(Box<Expression<'a>>, Box<[Statement<'a>]>, Box<[Statement<'a>]>),
 }
 
 pub struct Statement<'a>(pub Span<'a>, pub _Statement<'a>);
