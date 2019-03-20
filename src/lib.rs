@@ -18,7 +18,7 @@ pub fn execute_pavo<'s>(src: &'s str) -> Result<PavoResult, Err<LocatedSpan<Comp
     parse::script(LocatedSpan::new(CompleteStr(src)))
         .map(|(_, ast)| {
             let mut cx = Context::new();
-            let ir_chunk = ir::ast_to_ir(&ast);
+            let ir_chunk = ir::ast_to_ir(ast);
             return ir_chunk.compute(vec![], &mut cx);
         })
 }
@@ -37,7 +37,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trivial() {
+    fn test_nil() {
         assert_pavo_ok("nil", Value::new_nil());
         assert_pavo_ok("nil; (nil); ((nil))", Value::new_nil());
         assert_pavo_ok("// comment\n nil //this comment ends with eof", Value::new_nil());
@@ -59,5 +59,51 @@ mod tests {
         assert_pavo_ok("if false { false } else { false; true }", Value::new_bool(true));
         assert_pavo_ok("if false { false } else if true { true }", Value::new_bool(true));
         assert_pavo_ok("if if true { false } { false } else { true }", Value::new_bool(true));
+    }
+
+    #[test]
+    fn test_land_and_lor() {
+        assert_pavo_ok("true || true", Value::new_bool(true));
+        assert_pavo_ok("true || false", Value::new_bool(true));
+        assert_pavo_ok("false || true", Value::new_bool(true));
+        assert_pavo_ok("false || false", Value::new_bool(false));
+        assert_pavo_ok("true && true", Value::new_bool(true));
+        assert_pavo_ok("true && false", Value::new_bool(false));
+        assert_pavo_ok("false && true", Value::new_bool(false));
+        assert_pavo_ok("false && false", Value::new_bool(false));
+
+        // `&&` has higher precedence than `||`
+        assert_pavo_ok("false && false || true", Value::new_bool(true));
+        assert_pavo_ok("(false && false) || true", Value::new_bool(true));
+        assert_pavo_ok("false && (false || true)", Value::new_bool(false));
+
+        // && and || are short-circuiting
+        assert_pavo_ok("false && while true {}", Value::new_bool(false));
+        assert_pavo_ok("true || while true {}", Value::new_bool(true));
+    }
+
+    #[test]
+    fn test_return() {
+        assert_pavo_ok("return true; false", Value::new_bool(true));
+        assert_pavo_ok("return; false", Value::new_nil());
+    }
+
+    #[test]
+    fn test_while() {
+        assert_pavo_ok("while false {}", Value::new_nil());
+        assert_pavo_ok("while false { true }; false", Value::new_bool(false));
+        assert_pavo_ok("while true { break false; true }", Value::new_bool(false));
+        assert_pavo_ok("
+            while true {
+                nil;
+                while true {
+                    nil;
+                    break
+                };
+                break true
+            };
+            false", Value::new_bool(false));
+
+        // TODO: test the return value (once we have variables)
     }
 }

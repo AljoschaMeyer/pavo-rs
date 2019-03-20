@@ -5,7 +5,7 @@
 use nom::{
     {line_ending, not_line_ending, multispace1, eof},
     {value, tag, take_while1},
-    {do_parse, alt, many0, many1, opt},
+    {do_parse, alt, many0, many1, opt, fold_many0},
     {delimited, separated_list_complete},
     {named, not, map},
     types::CompleteStr
@@ -44,6 +44,10 @@ named!(ws1(Span) -> (), do_parse!(
 named!(semi(Span) -> (), do_parse!(tag!(";") >> ws0 >> (())));
 named!(lbrace(Span) -> (), do_parse!(tag!("{") >> ws0 >> (())));
 named!(rbrace(Span) -> (), do_parse!(tag!("}") >> ws0 >> (())));
+named!(lparen(Span) -> (), do_parse!(tag!("(") >> ws0 >> (())));
+named!(rparen(Span) -> (), do_parse!(tag!(")") >> ws0 >> (())));
+named!(land(Span) -> (), do_parse!(tag!("&&") >> ws0 >> (())));
+named!(lor(Span) -> (), do_parse!(tag!("||") >> ws0 >> (())));
 
 fn is_id_char(c: char) -> bool {
     return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c == '_');
@@ -84,6 +88,27 @@ named!(kw_else(Span) -> (), do_parse!(
     (())
 ));
 
+named!(kw_return(Span) -> (), do_parse!(
+    tag!("return") >>
+    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
+    ws0 >>
+    (())
+));
+
+named!(kw_break(Span) -> (), do_parse!(
+    tag!("break") >>
+    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
+    ws0 >>
+    (())
+));
+
+named!(kw_while(Span) -> (), do_parse!(
+    tag!("while") >>
+    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
+    ws0 >>
+    (())
+));
+
 named!(exp_nil(Span) -> Expression, do_parse!(
     pos: position!() >>
     kw_nil >>
@@ -112,33 +137,53 @@ named!(exp_if(Span) -> Expression, do_parse!(
             else_block: alt!(
                 block |
                 map!(exp_blocky, |e| {
-                    vec![Statement(e.0, _Statement::Expression(e))].into_boxed_slice()
+                    vec![Statement(e.0, _Statement::Expression(e))]
                 })
             ) >>
             (else_block)
         )),
-        |blck| {
-            match blck {
-                Some(stmts) => stmts,
-                None => vec![].into_boxed_slice(),
-            }
-        }
+        |blck| blck.unwrap_or(vec![])
     ) >>
     (Expression(pos, _Expression::If(cond, if_block, else_block)))
 ));
 
-// Expressions that can follow an `else` keyword without being enclosed in braces.
-named!(exp_blocky(Span) -> Expression, alt!(
-    exp_if
+named!(exp_while(Span) -> Expression, do_parse!(
+    pos: position!() >>
+    kw_while >>
+    cond: map!(exp, Box::new) >>
+    loop_block: block >>
+    (Expression(pos, _Expression::While(cond, loop_block)))
 ));
 
-named!(exp(Span) -> Expression, alt!(
+// Expressions that can follow an `else` keyword without being enclosed in braces.
+named!(exp_blocky(Span) -> Expression, alt!(
+    exp_if | exp_while
+));
+
+// 100 is the precedence level
+// `&&`
+named!(exp_binop_100(Span) -> Expression, do_parse!(
+    pos: position!() >>
+    first: non_leftrecursive_exp >>
+    fold: fold_many0!(
+        do_parse!(
+            land >>
+            expr: non_leftrecursive_exp >>
+            (expr)
+        ),
+        first,
+        |acc, item| Expression(pos, _Expression::Land(Box::new(acc), Box::new(item)))
+    ) >>
+    (fold)
+));
+
+named!(non_leftrecursive_exp(Span) -> Expression, alt!(
     // expression wrapped in parens
     do_parse!(
         ex: delimited!(
-            do_parse!(tag!("(") >> ws0 >> (())),
+            lparen,
             exp,
-            tag!(")")
+            rparen
         ) >>
         ws0 >>
         (ex)
@@ -147,23 +192,52 @@ named!(exp(Span) -> Expression, alt!(
     exp_blocky
 ));
 
+// This is the left-recursive expression of the lowest precedence level
+named!(exp(Span) -> Expression, do_parse!(
+    pos: position!() >>
+    first: exp_binop_100 >>
+    fold: fold_many0!(
+        do_parse!(
+            lor >>
+            expr: exp_binop_100 >>
+            (expr)
+        ),
+        first,
+        |acc, item| Expression(pos, _Expression::Lor(Box::new(acc), Box::new(item)))
+    ) >>
+    (fold)
+));
+
 named!(stmt_exp(Span) -> Statement, do_parse!(
-    ex: exp >>
-    (Statement(ex.0.clone(), _Statement::Expression(ex)))
+    expr: exp >>
+    (Statement(expr.0.clone(), _Statement::Expression(expr)))
+));
+
+named!(stmt_return(Span) -> Statement, do_parse!(
+    pos: position!() >>
+    kw_return >>
+    expr: map!(opt!(exp), |maybe_exp| maybe_exp.unwrap_or(Expression::nil())) >>
+    (Statement(pos, _Statement::Return(expr)))
+));
+
+named!(stmt_break(Span) -> Statement, do_parse!(
+    pos: position!() >>
+    kw_break >>
+    expr: map!(opt!(exp), |maybe_exp| maybe_exp.unwrap_or(Expression::nil())) >>
+    (Statement(pos, _Statement::Break(expr)))
 ));
 
 named!(stmt(Span) -> Statement, alt!(
-    stmt_exp
+    stmt_exp |
+    stmt_return |
+    stmt_break
 ));
 
-named!(stmts0(Span) -> Box<[Statement]>, map!(
-    separated_list_complete!(semi, stmt),
-    Vec::into_boxed_slice
-));
+named!(stmts0(Span) -> Vec<Statement>, separated_list_complete!(semi, stmt));
 
-named!(block(Span) -> Box<[Statement]>, delimited!(lbrace, stmts0, rbrace));
+named!(block(Span) -> Vec<Statement>, delimited!(lbrace, stmts0, rbrace));
 
-named!(pub script(Span) -> Box<[Statement]>, do_parse!(
+named!(pub script(Span) -> Vec<Statement>, do_parse!(
     ws0 >>
     sts: stmts0 >>
     eof!() >>

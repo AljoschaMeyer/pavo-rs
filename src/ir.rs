@@ -27,6 +27,7 @@ enum Addr {
     // Address of a register in a `LocalState`.
     //
     // Register 0 is used for passing data from one statement to the next.
+    // Register 1 is used by while loops to return the correct value.
     // Additional registers are used when multiple values need to be kept in memory simutaneously,
     // e.g. all the arguments that are passed to a function call.
     Register(usize),
@@ -47,6 +48,10 @@ enum Instruction {
     Jump(usize),
     /// Jump to the first basic block if the value at the Addr is truthy, else to the second one.
     CondJump(Addr, usize, usize),
+    /// Write the value at Addr `src` to the Addr `dst`.
+    Write { src: Addr, dst: Addr },
+    /// Swap the values in the given Addrs.
+    Swap(Addr, Addr),
 }
 use Instruction::*;
 
@@ -62,6 +67,9 @@ struct BBB {
     blocks: Vec<Vec<Instruction>>,
     // Index of the currently active block.
     current: usize,
+    // Index of the block to which a `break` statement should jump.
+    // This has nothing to do with an *actual breakpoint*, but you can't stop me!
+    breakpoint: usize,
 }
 
 impl BBB {
@@ -69,6 +77,7 @@ impl BBB {
         BBB {
             blocks: vec![vec![]],
             current: 0,
+            breakpoint: BB_RETURN,
         }
     }
 
@@ -92,13 +101,13 @@ impl BBB {
     fn into_ir(self) -> IrChunk {
         IrChunk {
             basic_blocks: self.blocks,
-            num_registers: 1,
+            num_registers: 2, // registers 0 and 1 are always reserved
         }
     }
 }
 
 /// Converts an abstract syntax tree into an `IrChunk`.
-pub fn ast_to_ir(ast: &Box<[Statement]>) -> IrChunk {
+pub fn ast_to_ir(ast: Vec<Statement>) -> IrChunk {
     let mut bbb = BBB::new();
     block_to_ir(ast, BB_RETURN, &mut bbb);
     return bbb.into_ir();
@@ -106,12 +115,13 @@ pub fn ast_to_ir(ast: &Box<[Statement]>) -> IrChunk {
 
 // Convert a sequence of statements into instructions and basic blocks, using the given BBB.
 // As the last instruction, jump to the basic block `jump_to`.
-fn block_to_ir(block: &Box<[Statement]>, jump_to: usize, bbb: &mut BBB) {
-    for statement in block.iter() {
+fn block_to_ir(block: Vec<Statement>, jump_to: usize, bbb: &mut BBB) {
+    let len = block.len();
+    for statement in block.into_iter() {
         statement_to_ir(statement, bbb);
     }
 
-    if block.len() == 0 {
+    if len == 0 {
         bbb.append(Literal(Value::new_nil(), Addr::reg(0)));
     }
 
@@ -119,14 +129,22 @@ fn block_to_ir(block: &Box<[Statement]>, jump_to: usize, bbb: &mut BBB) {
 }
 
 // Convert a single statement into instructions and basic blocks, using the given BBB..
-fn statement_to_ir(statement: &Statement, bbb: &mut BBB) {
+fn statement_to_ir(statement: Statement, bbb: &mut BBB) {
     match statement.1 {
-        _Statement::Expression(ref exp) => exp_to_ir(exp, bbb),
+        _Statement::Expression(exp) => exp_to_ir(exp, bbb),
+        _Statement::Return(exp) => {
+            exp_to_ir(exp, bbb);
+            bbb.append(Jump(BB_RETURN));
+        }
+        _Statement::Break(exp) => {
+            exp_to_ir(exp, bbb);
+            bbb.append(Jump(bbb.breakpoint));
+        }
     }
 }
 
 // Convert a single expression into instructions and basic blocks, using the given BBB..
-fn exp_to_ir(exp: &Expression, bbb: &mut BBB) {
+fn exp_to_ir(exp: Expression, bbb: &mut BBB) {
     match exp.1 {
         _Expression::Nil => {
             bbb.append(Literal(Value::new_nil(), Addr::reg(0)));
@@ -134,8 +152,8 @@ fn exp_to_ir(exp: &Expression, bbb: &mut BBB) {
         _Expression::Bool(b) => {
             bbb.append(Literal(Value::new_bool(b), Addr::reg(0)));
         }
-        _Expression::If(ref cond, ref then_block, ref else_block) => {
-            exp_to_ir(cond, bbb);
+        _Expression::If(cond, then_block, else_block) => {
+            exp_to_ir(*cond, bbb);
 
             let bb_then = bbb.new_block();
             let bb_else = bbb.new_block();
@@ -150,6 +168,62 @@ fn exp_to_ir(exp: &Expression, bbb: &mut BBB) {
             block_to_ir(else_block, bb_cont, bbb);
 
             bbb.set_active_block(bb_cont);
+        }
+        _Expression::Land(lhs, rhs) => {
+            // `a && b` desugars to `if a { if b { true } else { false } } else { false }`
+            let desugared = Expression::if_(
+                lhs,
+                vec![Statement::exp(Expression::if_(
+                    rhs,
+                    vec![Statement::exp(Expression::bool_(true))],
+                    vec![Statement::exp(Expression::bool_(false))]
+                ))],
+                vec![Statement::exp(Expression::bool_(false))],
+            );
+            exp_to_ir(desugared, bbb)
+        }
+        _Expression::Lor(lhs, rhs) => {
+            // `a || b` desugars to `if a { true } else if b { true } else { false }`
+            let desugared = Expression::if_(
+                lhs,
+                vec![Statement::exp(Expression::bool_(true))],
+                vec![Statement::exp(Expression::if_(
+                    rhs,
+                    vec![Statement::exp(Expression::bool_(true))],
+                    vec![Statement::exp(Expression::bool_(false))]
+                ))],
+            );
+            exp_to_ir(desugared, bbb)
+        }
+        _Expression::While(cond, loop_block) => {
+            let bb_cond = bbb.new_block();
+            let bb_loop = bbb.new_block();
+            let bb_cont = bbb.new_block();
+
+            // Pretend there was a previous loop iteration that evaluated to `nil`, so that we
+            // evaluate to `nil` if the condition evaluates falsey at the first attempt.
+            bbb.append(Literal(Value::new_nil(), Addr::reg(0)));
+            // Evaluate the condition for the first time.
+            bbb.append(Jump(bb_cond));
+
+            // The block for evaluating the condition. It also ensures that we evaluate to the
+            // correct value.
+            bbb.set_active_block(bb_cond);
+            // When entering here, register 0 holds the result of the previous loop body execution.
+            // We save it to register 1 before evaluating the condition, and restore it afterwards.
+            bbb.append(Write { src: Addr::reg(0), dst: Addr::reg(1)});
+            exp_to_ir(*cond, bbb);
+            bbb.append(Swap(Addr::reg(1), Addr::reg(0)));
+            bbb.append(CondJump(Addr::reg(1), bb_loop, bb_cont));
+
+            // The loop body, we save the old breakpoint and set the new one.
+            let prev_breakpoint = bbb.breakpoint;
+            bbb.breakpoint = bb_cont;
+            bbb.set_active_block(bb_loop);
+            block_to_ir(loop_block, bb_cond, bbb);
+
+            bbb.set_active_block(bb_cont);
+            bbb.breakpoint = prev_breakpoint;
         }
     }
 }
@@ -233,6 +307,15 @@ impl Computation for IrChunk {
                     } else {
                         state.pc = (*else_block, 0);
                     }
+                }
+
+                Write { src, dst } => dst.store(src.load(&mut state), &mut state),
+
+                Swap(a, b) => {
+                    let val_a = a.load(&mut state);
+                    let val_b = b.load(&mut state);
+                    a.store(val_b, &mut state);
+                    b.store(val_a, &mut state);
                 }
             }
         }

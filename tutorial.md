@@ -107,7 +107,6 @@ enum Instruction {
     /// Jump to the first basic block if the value at the Addr is truthy, else to the second one.
     CondJump(Addr, usize, usize),
 }
-use Instruction::*;
 
 // If this is given as an unconditional jump address, return from the function instead.
 const BB_RETURN: usize = std::usize::MAX;
@@ -344,3 +343,128 @@ return bbb.into_ir();
 ```
 
 Wheew, that was quite a lot of code, but now we've got the very fundamentals of the interpreter done. Next, we'll add a few more control flow constructs to the language.
+
+---
+
+The next control flow constructs are fairly straightforward to add. The short-circuiting `&&` and `||` operators can be desugared into `if` expressions:
+
+```rust
+_Expression::Land(lhs, rhs) => {
+    // `a && b` desugars to `if a { if b { true } else { false } } else { false }`
+    let desugared = Expression::if_(
+        lhs,
+        vec![Statement::exp(Expression::if_(
+            rhs,
+            vec![Statement::exp(Expression::bool_(true))],
+            vec![Statement::exp(Expression::bool_(false))]
+        ))],
+        vec![Statement::exp(Expression::bool_(false))],
+    );
+    exp_to_ir(desugared, bbb)
+}
+
+// `a || b` desugars to `if a { true } else if b { true } else { false }`
+```
+
+The more interesting part about these operators is that they introduce some parsing issues: We need to deal with left-recursion and with operator precedence (`&&` has higher precedence than `||`). To solve this, we refactor the grammar as explained [here](http://www.engr.mun.ca/~theo/Misc/exp_parsing.htm#classic), stealing the code to do so from [here](https://github.com/Geal/nom/issues/445#issuecomment-297421046):
+
+```rust
+// 100 is the precedence level
+// `&&`
+named!(exp_binop_100(Span) -> Expression, do_parse!(
+    pos: position!() >>
+    first: non_leftrecursive_exp >>
+    fold: fold_many0!(
+        do_parse!(
+            land >>
+            expr: non_leftrecursive_exp >>
+            (expr)
+        ),
+        first,
+        |acc, item| Expression(pos, _Expression::Land(Box::new(acc), Box::new(item)))
+    ) >>
+    (fold)
+));
+```
+
+We add a `return` statement to the language. It can optionally return an expression (`return x`), which defaults to `nil`. Technically we haven't introduced functions yet, so this may seem odd. But in general, execution of a pavo script is equivalent to execution of a function of zero arguments with the script as the body (actually, it'll be an async function, but we are not there yet). Under this interpretation, `return` makes perfect sense in a top-level script. There's nothing interesting about the implementation whatsoever.
+
+Next, we add `while` loops and the associated `break` statements. Syntactically, the loops are of the form `while cond_exp { stmt1; stmt2 }`. `while` loops are blocky expressions, they can be used as an `else` clause without delimiting curly braces. `break` works like `return` (including the optional expression to evaluate to), but jumps to the basic block after the loop rather than returning. A `break` statement that is not contained in a loop acts like a `return`.
+
+We use the `BBB` helper to keep track of where to jump at a `break`. Before creating the code of the loop body, we save the old address (initialized to `BB_RETURN`) to the current stack frame and set the value on the `BBB` to the block where execution after the loop should resume. After the loop body has been generated, we reset the value to the saved one.
+
+While loops need to juggle some registers around when evaluating the condition: The result of the previous loop iteration is stored in register 0, and we need to preserve it because we want to return that value after we checked the condition. To that end, we extend our instruction set with instructions to move around values:
+
+```rust
+enum Instruction {
+    /* old instructios remain unchanged, new ones are below*/    
+    /// Write the value at Addr `src` to the Addr `dst`.
+    Write { src: Addr, dst: Addr },
+    /// Swap the values in the given Addrs.
+    Swap(Addr, Addr),
+}
+```
+
+Interpreting these instructions is straightforward:
+
+```rust
+match &self.basic_blocks[state.pc.0][state.pc.1 - 1] {
+    /* interpretation of old instructions remains unchanged, new ones are below */
+
+    Write { src, dst } => dst.store(src.load(&mut state), &mut state),
+
+    Swap(a, b) => {
+        let val_a = a.load(&mut state);
+        let val_b = b.load(&mut state);
+        a.store(val_b, &mut state);
+        b.store(val_a, &mut state);
+    }
+}
+
+```
+
+The full code generation for a `while` loop, using these new intructions:
+
+```rust
+_Expression::While(cond, loop_block) => {
+    let bb_cond = bbb.new_block();
+    let bb_loop = bbb.new_block();
+    let bb_cont = bbb.new_block();
+
+    // Pretend there was a previous loop iteration that evaluated to `nil`, so that we
+    // evaluate to `nil` if the condition evaluates falsey at the first attempt.
+    bbb.append(Literal(Value::new_nil(), Addr::reg(0)));
+    // Evaluate the condition for the first time.
+    bbb.append(Jump(bb_cond));
+
+    // The block for evaluating the condition. It also ensures that we evaluate to the
+    // correct value.
+    bbb.set_active_block(bb_cond);
+    // When entering here, register 0 holds the result of the previous loop body execution.
+    // We save it to register 1 before evaluating the condition, and restore it afterwards.
+    bbb.append(Write { src: Addr::reg(0), dst: Addr::reg(1)});
+    exp_to_ir(*cond, bbb);
+    bbb.append(Swap(Addr::reg(1), Addr::reg(0)));
+    bbb.append(CondJump(Addr::reg(1), bb_loop, bb_cont));
+
+    // The loop body, we save the old breakpoint and set the new one.
+    let prev_breakpoint = bbb.breakpoint;
+    bbb.breakpoint = bb_cont;
+    bbb.set_active_block(bb_loop);
+    block_to_ir(loop_block, bb_cond, bbb);
+
+    bbb.set_active_block(bb_cont);
+    bbb.breakpoint = prev_breakpoint;
+}
+```
+
+And the corresponding code generation for `break` statements:
+
+```rust
+_Statement::Break(exp) => {
+    exp_to_ir(exp, bbb);
+    bbb.append(Jump(bbb.breakpoint));
+}
+```
+
+That concludes the basic control flow constructs. The remaining ones (`case`, `loop` and `try`/`catch`/`finally`) are based on *patterns*, which we will introduce next.
