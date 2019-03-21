@@ -49,28 +49,21 @@ pub enum _Statement<'a> {
 // `&'a str` arguments are an easy way to handle the lifetime requirements, they can be empty.
 
 impl<'a> Expression<'a> {
-    pub fn nil() -> Expression<'static> {
-        Expression(
-            LocatedSpan::new(CompleteStr("")),
-            _Expression::Nil,
-        )
-    }
-
-    pub fn bool_(b: bool) -> Expression<'static> {
+    fn bool_(b: bool) -> Expression<'static> {
         Expression(
             LocatedSpan::new(CompleteStr("")),
             _Expression::Bool(b)
         )
     }
 
-    pub fn if_(cond: Box<Expression<'a>>, then_block: Vec<Statement<'a>>, else_block: Vec<Statement<'a>>) -> Expression<'a> {
+    fn if_(cond: Box<Expression<'a>>, then_block: Vec<Statement<'a>>, else_block: Vec<Statement<'a>>) -> Expression<'a> {
         Expression(
             LocatedSpan::new(CompleteStr("")),
             _Expression::If(cond, then_block, else_block)
         )
     }
 
-    pub fn id(the_id: Id<'a>) -> Expression<'a> {
+    fn id(the_id: Id<'a>) -> Expression<'a> {
         Expression(
             LocatedSpan::new(CompleteStr("")),
             _Expression::Id(the_id)
@@ -79,14 +72,14 @@ impl<'a> Expression<'a> {
 }
 
 impl<'a> Statement<'a> {
-    pub fn exp(e: Expression<'a>) -> Statement<'a> {
+    fn exp(e: Expression<'a>) -> Statement<'a> {
         Statement(
             LocatedSpan::new(CompleteStr("")),
             _Statement::Expression(e)
         )
     }
 
-    pub fn let_(id: Id<'a>, mutable: bool, rhs: Expression<'a>) -> Statement<'a> {
+    fn let_(id: Id<'a>, mutable: bool, rhs: Expression<'a>) -> Statement<'a> {
         Statement(
             LocatedSpan::new(CompleteStr("")),
             _Statement::Let { id, mutable, rhs }
@@ -132,24 +125,33 @@ impl<'a> From<PavoExpression<'a>> for Expression<'a> {
 }
 
 pub fn desugar_statements<'a>(stmts: Vec<PavoStatement<'a>>) -> Vec<Statement<'a>> {
-    stmts.into_iter().flat_map(|stmt| desugar_statement(stmt).into_iter()).collect()
+    let mut buf = vec![];
+    do_desugar_statements(stmts, &mut buf);
+    buf
 }
 
-fn desugar_statement<'a>(stmt: PavoStatement<'a>) -> Vec<Statement<'a>> {
+fn do_desugar_statements<'a>(stmts: Vec<PavoStatement<'a>>, buf: &mut Vec<Statement<'a>>) {
+    for stmt in stmts.into_iter() {
+        desugar_statement(stmt, buf);
+    }
+}
+
+fn desugar_statement<'a>(stmt: PavoStatement<'a>, buf: &mut Vec<Statement<'a>>) {
     match stmt.1 {
-        _PavoStatement::Expression(exp) => vec![Statement(
+        _PavoStatement::Expression(exp) => buf.push(Statement(
             stmt.0, _Statement::Expression(exp.into())
-        )],
-        _PavoStatement::Return(exp) => vec![Statement(
+        )),
+        _PavoStatement::Return(exp) => buf.push(Statement(
             stmt.0, _Statement::Return(exp.into())
-        )],
-        _PavoStatement::Break(exp) => vec![Statement(
+        )),
+        _PavoStatement::Break(exp) => buf.push(Statement(
             stmt.0, _Statement::Break(exp.into())
-        )],
+        )),
         _PavoStatement::Let(pat, rhs) => {
-            std::iter::once(Statement(
+            buf.push(Statement(
                stmt.0, _Statement::Let { id: Id::new(PAT), mutable: true, rhs: rhs.into() }
-           )).chain(desugar_binder_pattern(pat).into_iter()).collect::<Vec<_>>()
+           ));
+           desugar_binder_pattern(pat, buf);
         }
     }
 }
@@ -157,11 +159,11 @@ fn desugar_statement<'a>(stmt: PavoStatement<'a>) -> Vec<Statement<'a>> {
 // special str used as a prefix for the "identifiers" generated during pattern desugaring
 const PAT: &str = "ß";
 
-fn desugar_binder_pattern<'a>(pat: BinderPattern<'a>) -> Vec<Statement<'a>> {
+fn desugar_binder_pattern<'a>(pat: BinderPattern<'a>, buf: &mut Vec<Statement<'a>>) {
     match pat.1 {
-        _BinderPattern::Blank => vec![],
+        _BinderPattern::Blank => { /* no-op */ },
         _BinderPattern::Id(id, mutable) => {
-            vec![Statement::let_(id, mutable, Expression::id(Id::new(PAT)))]
+            buf.push(Statement::let_(id, mutable, Expression::id(Id::new(PAT))));
         }
     }
 }
