@@ -26,11 +26,11 @@ Pavo is an imperative language with C-like syntax. *Expressions* are evaluated t
 All expressions are also statements.
 
 ```pavo
-// This is a very boring pavo program. Surprisingly enough, it evaluates to `nil`.
+# This is a very boring pavo program. Surprisingly enough, it evaluates to `nil`.
 nil;
 ((nil));
 (nil)
-// Note how the last statement is not terminated by a semicolon.
+# Note how the last statement is not terminated by a semicolon.
 ```
 
 #### Return
@@ -59,7 +59,7 @@ An if-expression consists of the keyword `if`, followed by a *condition* (an exp
 Evaluation of an if-expression begins by evaluating the *condition*. If it is *truthy* (neither `nil` nor `false`), then evaluate the following block. If the condition is not truthy, then evaluate the else-block (or the else-blocky-expression) instead. If the condition is not truthy and there is no else-block, the if-expression evaluates to `nil`.
 
 ```pavo
-// evaluates to nil
+# evaluates to nil
 if true {
   if false {}
 } else if true {

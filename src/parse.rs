@@ -22,7 +22,7 @@ use crate::syntax::{
 type Span<'a> = LocatedSpan<CompleteStr<'a>>;
 
 named!(linecomment(Span) -> (), do_parse!(
-    tag!("//") >>
+    tag!("#") >>
     many0!(not_line_ending) >>
     opt!(line_ending) >>
     (())
