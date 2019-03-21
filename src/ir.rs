@@ -7,7 +7,7 @@
 //! version of pavo.
 
 use crate::{
-    syntax::{Statement, _Statement, Expression, _Expression},
+    syntax_light::{Statement, _Statement, Expression, _Expression},
     value::Value,
     context::{Computation, Context, PavoResult},
 };
@@ -140,6 +140,7 @@ fn statement_to_ir(statement: Statement, bbb: &mut BBB) {
             exp_to_ir(exp, bbb);
             bbb.append(Jump(bbb.breakpoint));
         }
+        _Statement::Let { .. } => unimplemented!("won't exist after implementing binding resolution"),
     }
 }
 
@@ -152,6 +153,7 @@ fn exp_to_ir(exp: Expression, bbb: &mut BBB) {
         _Expression::Bool(b) => {
             bbb.append(Literal(Value::new_bool(b), Addr::reg(0)));
         }
+        _Expression::Id(id) => unimplemented!("won't exist after implementing binding resolution"),
         _Expression::If(cond, then_block, else_block) => {
             exp_to_ir(*cond, bbb);
 
@@ -168,32 +170,6 @@ fn exp_to_ir(exp: Expression, bbb: &mut BBB) {
             block_to_ir(else_block, bb_cont, bbb);
 
             bbb.set_active_block(bb_cont);
-        }
-        _Expression::Land(lhs, rhs) => {
-            // `a && b` desugars to `if a { if b { true } else { false } } else { false }`
-            let desugared = Expression::if_(
-                lhs,
-                vec![Statement::exp(Expression::if_(
-                    rhs,
-                    vec![Statement::exp(Expression::bool_(true))],
-                    vec![Statement::exp(Expression::bool_(false))]
-                ))],
-                vec![Statement::exp(Expression::bool_(false))],
-            );
-            exp_to_ir(desugared, bbb)
-        }
-        _Expression::Lor(lhs, rhs) => {
-            // `a || b` desugars to `if a { true } else if b { true } else { false }`
-            let desugared = Expression::if_(
-                lhs,
-                vec![Statement::exp(Expression::bool_(true))],
-                vec![Statement::exp(Expression::if_(
-                    rhs,
-                    vec![Statement::exp(Expression::bool_(true))],
-                    vec![Statement::exp(Expression::bool_(false))]
-                ))],
-            );
-            exp_to_ir(desugared, bbb)
         }
         _Expression::While(cond, loop_block) => {
             let bb_cond = bbb.new_block();

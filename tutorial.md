@@ -467,4 +467,4 @@ _Statement::Break(exp) => {
 }
 ```
 
-That concludes the basic control flow constructs. The remaining ones (`case`, `loop` and `try`/`catch`/`finally`) are based on *patterns*, which we will introduce next.
+That concludes the basic control flow constructs. The remaining ones (`case`, `loop` and `try`/`catch`/`finally`) are based on *patterns*, but for those we need environments for variables first.

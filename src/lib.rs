@@ -5,6 +5,8 @@ use nom_locate::LocatedSpan;
 mod syntax;
 // A parser to turn well-formed source code into a syntax tree.
 mod parse;
+// The subset of pavo produced after desugaring.
+mod syntax_light;
 // Definition of the pavo runtime values.
 mod value;
 // The context in which a pavo computation is evaluated.
@@ -18,7 +20,8 @@ pub fn execute_pavo<'s>(src: &'s str) -> Result<PavoResult, Err<LocatedSpan<Comp
     parse::script(LocatedSpan::new(CompleteStr(src)))
         .map(|(_, ast)| {
             let mut cx = Context::new();
-            let ir_chunk = ir::ast_to_ir(ast);
+            let desugared = syntax_light::desugar_statements(ast);
+            let ir_chunk = ir::ast_to_ir(desugared);
             return ir_chunk.compute(vec![], &mut cx);
         })
 }

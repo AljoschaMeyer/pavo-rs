@@ -4,17 +4,19 @@
 
 use nom::{
     {line_ending, not_line_ending, multispace1, eof},
-    {value, tag, take_while1},
-    {do_parse, alt, many0, many1, opt, fold_many0},
+    {value, tag, take_while1, one_of},
+    {do_parse, alt, many0, many1, opt, fold_many0, many_m_n},
     {delimited, separated_list_complete},
-    {named, not, map},
-    types::CompleteStr
+    {named, not, map, try_parse},
+    types::CompleteStr, IResult, Err, Context, ErrorKind,
 };
 use nom_locate::{LocatedSpan, position};
 
 use crate::syntax::{
+    Id,
     Expression, _Expression,
     Statement, _Statement,
+    BinderPattern, _BinderPattern,
 };
 
 type Span<'a> = LocatedSpan<CompleteStr<'a>>;
@@ -48,9 +50,53 @@ named!(lparen(Span) -> (), do_parse!(tag!("(") >> ws0 >> (())));
 named!(rparen(Span) -> (), do_parse!(tag!(")") >> ws0 >> (())));
 named!(land(Span) -> (), do_parse!(tag!("&&") >> ws0 >> (())));
 named!(lor(Span) -> (), do_parse!(tag!("||") >> ws0 >> (())));
+named!(blank(Span) -> (), do_parse!(tag!("_") >> ws0 >> (())));
 
 fn is_id_char(c: char) -> bool {
     return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c == '_');
+}
+
+fn id<'a>(i: Span<'a>) -> IResult<Span<'a>, Id> {
+    let (i1, maybe_underscore) = try_parse!(i, opt!(tag!("_")));
+    let (remaining, len) = if maybe_underscore.is_some() {
+        try_parse!(i1, do_parse!(
+            len: map!(
+                many_m_n!(1, 254, one_of!("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")),
+                |tail| 1 + tail.len()
+            ) >>
+            not!(take_while1!(is_id_char)) /* ensure the id isn't even longer */ >>
+            ws0 >>
+            (len)
+        ))
+    } else {
+        try_parse!(i1, do_parse!(
+            one_of!("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") >>
+            len: map!(
+                many_m_n!(0, 254, one_of!("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")),
+                |tail| 1 + tail.len()
+            ) >>
+            not!(take_while1!(is_id_char)) /* ensure the id isn't even longer */ >>
+            ws0 >>
+            (len)
+        ))
+    };
+
+    let the_id_str = &i.fragment[..len];
+    let mut the_id = i.clone();
+    the_id.fragment = CompleteStr(the_id_str);
+
+    if is_kw(the_id_str) {
+        Err(Err::Error(Context::Code(remaining, ErrorKind::Custom(0))))
+    } else {
+        Ok((remaining, Id(the_id)))
+    }
+}
+
+fn is_kw(id: &str) -> bool {
+    id == "nil" || id == "true" || id == "false" || id == "if" || id == "else" ||
+    id == "return" || id == "break" || id == "while" || id == "mut" || id == "loop" ||
+    id == "case" || id == "throw" || id == "try" || id == "catch" || id == "finally" ||
+    id == "async" || id == "await" || id == "for" || id == "nan" || id == "inf"
 }
 
 named!(kw_nil(Span) -> (), do_parse!(
@@ -109,6 +155,19 @@ named!(kw_while(Span) -> (), do_parse!(
     (())
 ));
 
+named!(kw_mut(Span) -> (), do_parse!(
+    tag!("mut") >>
+    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
+    ws0 >>
+    (())
+));
+
+named!(exp_id(Span) -> Expression, do_parse!(
+    pos: position!() >>
+    the_id: id >>
+    (Expression(pos, _Expression::Id(the_id)))
+));
+
 named!(exp_nil(Span) -> Expression, do_parse!(
     pos: position!() >>
     kw_nil >>
@@ -123,7 +182,7 @@ named!(exp_bool(Span) -> Expression, do_parse!(
 
 // Expressions that do not contain other expressions.
 named!(exp_atomic(Span) -> Expression, alt!(
-    exp_nil | exp_bool
+    exp_id | exp_nil | exp_bool
 ));
 
 named!(exp_if(Span) -> Expression, do_parse!(
@@ -236,6 +295,29 @@ named!(stmt(Span) -> Statement, alt!(
 named!(stmts0(Span) -> Vec<Statement>, separated_list_complete!(semi, stmt));
 
 named!(block(Span) -> Vec<Statement>, delimited!(lbrace, stmts0, rbrace));
+
+named!(pattern_id(Span) -> (Id, bool), do_parse!(
+    mutable: map!(opt!(kw_mut), |maybe| maybe.is_some()) >>
+    binder: id >>
+    ((binder, mutable))
+));
+
+named!(binder_id(Span) -> BinderPattern, do_parse!(
+    pos: position!() >>
+    pat: map!(pattern_id, |(binder, mutable)| _BinderPattern::Id(binder, mutable)) >>
+    (BinderPattern(pos, pat))
+));
+
+named!(binder_blank(Span) -> BinderPattern, do_parse!(
+    pos: position!() >>
+    pat: value!(_BinderPattern::Blank, blank) >>
+    (BinderPattern(pos, pat))
+));
+
+named!(binder_pat(Span) -> BinderPattern, alt!(
+    binder_id |
+    binder_blank
+));
 
 named!(pub script(Span) -> Vec<Statement>, do_parse!(
     ws0 >>
