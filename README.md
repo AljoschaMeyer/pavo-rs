@@ -17,9 +17,21 @@ The `nil` type only holds a single value: `nil` (which is also the literal of th
 
 The `bool` type holds two values: `true` and `false` (which are also the literals of the values).
 
-## Statements, Expressions and Execution
+## Syntax and Semantics
 
 Pavo is an imperative language with C-like syntax. *Expressions* are evaluated to values, and *statements* are executed in sequence to perform actions depending on those values. Statements also evaluate to values, those statements that are executed purely for side-effects evaluate to `nil`. A piece of pavo source code is called a *script*. Each script consists of any number of statements, separated by semicolons. Any semicolon-separated sequence of statements evaluates to the value to which the last of those statements evaluated. The empty sequence of statements evaluates to `nil`.
+
+### Keywords
+
+The following words have special meaning in the language:
+
+```ascii
+nil, true, false, if, else, return, break, while, let, mut, loop, case, throw, try, catch, finally, async, await, for, nan, inf
+```
+
+### Identifiers
+
+An identifier consists of one to 255 alphanumeric/underscore ascii characters. It must not begin with a number, and the underscore alone is not an identifier. Additionally, an identifier can not be equal to a keyword. Free identifiers are syntax errors, bound identifiers evaluate to whatever value they are currently bound to.
 
 ### Statements
 
@@ -41,6 +53,58 @@ The `return x` statement exits the current function, making it evaluate to `x`. 
 
 The `break x` statement leaves the body of the enclosing loop, making it evaluate to `x`. If the expression `x` is omitted, it evaluates to `nil`. If there is no enclosing loop, `break x` is equivalent to `return x`.
 
+#### Assign
+
+The syntax for assignment is `some_identifier = some_expression`. The identifier must be bound by a mutable binding, anything else (free identifier or immutable binding) is a syntax error. The assign statement evaluates the expression and rebinds the identifier to the resulting value. The statement itself evaluates to `nil`.
+
+#### Let
+
+The syntax for let statements is `let some_binder_pattern = some_expression`. The let statement evalutes the expression and then binds the identifiers in the binder pattern (see next section) according to the resulting value. The statement itself evaluates to `nil`.
+
+### Binder Patterns
+
+Binder patterns are used to destructure expressions into subcomponents and bind these subcomponents to names. All mechanisms in pavo that introduce bound identifiers (`let` bindings, `catch` clauses and function arguments) do so via patterns.
+
+#### Blank Pattern
+
+The underscore `_` (which is *not* a valid identifier) pattern ignores matches any value, but does not bind it to a name.
+
+#### Id Pattern
+
+An identifier matches any value, the identifier is then bound to the value. This creates an immutable binding, the identifier can not be reassigned to. It is however perfectly valid to subsequently shadow the binding. Bindings are lexically scoped, each pair of curly braces introduces a new scope.
+
+```pavo
+let x = true;
+x = false # Syntax error, can not assign to an immutable binding.
+```
+
+```pavo
+let x = true;
+let x = false # This is fine, it creates a new binding that shadows the old one.
+```
+
+A mutable binding is created by preceding the identifier with the `mut` keyword.
+
+```pavo
+let mut x = true;
+x = false;
+x # evaluates to `false`
+```
+
+```pavo
+let mut x = true;
+if x {
+  let x = false; # shadows the outer x (and is immutable, so we can't reassign in this scope)
+  if x {
+    # not reached
+  } else {
+    let mut x = true; # shadowing again, now we can mutate
+    x = false; # this only mutates the inner `x`
+  }
+};
+x # still `true`, we never mutated the outermost binding
+```
+
 ### Expressions
 
 Expressions can be wrapped in parentheses without changing their semantics. This can be used to override operator precedences.
@@ -49,7 +113,23 @@ Expressions can be wrapped in parentheses without changing their semantics. This
 
 All literals are expressions.
 
-#### If-Expressions
+#### Identifiers
+
+An identifier consists of one to 255 alphanumeric/underscore ascii characters. It must not begin with a number, and the underscore alone is not an identifier. Free identifiers are syntax errors, bound identifiers evaluate to whatever value they are currently bound to.
+
+```pavo
+# This is a syntax error since x is free (it has not been explicitly
+# defined and is not part of the top-level bindings provided by pavo)
+x
+```
+
+```pavo
+let x = false;
+let x = true;
+x # evaluates to true
+```
+
+#### If
 
 An if-expression consists of the keyword `if`, followed by a *condition* (an expression), followed by a sequence of statements delimited by curly braces, optionally followed by the keyword `else` and another block of brace-delimited statements. The `else` keyword may also be followed by a *blocky expression* instead (without the need for curly braces). The list of *blocky expressions* is:
 
@@ -68,7 +148,7 @@ if true {
 }
 ```
 
-#### While-Expressions
+#### While
 
 A while-expression consists of the keyword `while`, followed by a *condition* (an expression), followed by a sequence of statements delimited by curly braces.
 

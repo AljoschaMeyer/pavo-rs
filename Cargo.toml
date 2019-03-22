@@ -5,6 +5,8 @@ authors = ["AljoschaMeyer <mail@aljoscha-meyer.de>"]
 edition = "2018"
 
 [dependencies]
+failure = "0.1.5"
+failure_derive = "0.1.5"
 gc = "0.3.2"
 gc_derive = "0.3.2"
 nom = "4.2.2"

@@ -1,4 +1,5 @@
-use nom::{Err, types::CompleteStr};
+use failure_derive::Fail;
+use nom::types::CompleteStr;
 use nom_locate::LocatedSpan;
 
 // The types that make up the pavo syntax trees.
@@ -7,29 +8,61 @@ mod syntax;
 mod parse;
 // The subset of pavo produced after desugaring.
 mod syntax_light;
+// Resolves bindings, detects free identifiers and mutability violations.
+mod binding_analysis;
 // Definition of the pavo runtime values.
 mod value;
 // The context in which a pavo computation is evaluated.
 mod context;
 // An intermediate representation of pavo code that gets interpreted.
 mod ir;
+mod util;
 
+use binding_analysis::AnalysisError;
 use context::{Computation, Context, PavoResult};
+use parse::ParseError;
 
-pub fn execute_pavo<'s>(src: &'s str) -> Result<PavoResult, Err<LocatedSpan<CompleteStr<'s>>>> {
-    parse::script(LocatedSpan::new(CompleteStr(src)))
-        .map(|(_, ast)| {
-            let mut cx = Context::new();
-            let desugared = syntax_light::desugar_statements(ast);
-            let ir_chunk = ir::ast_to_ir(desugared);
-            return ir_chunk.compute(vec![], &mut cx);
-        })
+#[derive(PartialEq, Eq, Debug, Clone, Hash, Fail)]
+pub enum StaticError {
+    #[fail(display = "malformed input file, error during parsing")]
+    Parse(#[fail(cause)] ParseError),
+    #[fail(display = "error detected during static analysis")]
+    Analysis(#[fail(cause)] AnalysisError),
+}
+
+impl From<ParseError> for StaticError {
+    fn from(err: ParseError) -> Self {
+        StaticError::Parse(err)
+    }
+}
+
+impl From<AnalysisError> for StaticError {
+    fn from(err: AnalysisError) -> Self {
+        StaticError::Analysis(err)
+    }
+}
+
+pub fn execute_pavo<'s>(src: &'s str) -> Result<PavoResult, StaticError> {
+    let ast = parse::script(LocatedSpan::new(CompleteStr(src)))?;
+    let desugared = syntax_light::desugar_statements(ast);
+    let analyzed = binding_analysis::analyze_statements(desugared, &mut top_level())?;
+    let ir_chunk = ir::ast_to_ir(analyzed);
+    let main = ir::Closure::from_script_chunk(ir_chunk);
+
+    let mut cx = Context::new();
+    return Ok(main.compute(vec![], &mut cx));
+}
+
+// TODO XXX This is temporary...
+fn top_level() -> impl Iterator<Item = String> {
+    vec![].into_iter() // TODO
 }
 
 #[cfg(test)]
 mod tests {
-    use super::execute_pavo;
+    use super::{execute_pavo, StaticError};
     use super::value::Value;
+    use super::binding_analysis::AnalysisError;
 
     fn assert_pavo_ok(src: &str, expected: Value) {
         match execute_pavo(src) {
@@ -52,6 +85,7 @@ mod tests {
     fn test_bools() {
         assert_pavo_ok("true", Value::new_bool(true));
         assert_pavo_ok("false", Value::new_bool(false));
+        assert_pavo_ok("true; false", Value::new_bool(false));
     }
 
     #[test]
@@ -106,7 +140,47 @@ mod tests {
                 break true
             };
             false", Value::new_bool(false));
+        assert_pavo_ok("
+            let mut x = true;
+            while x {
+                x = false;
+                true
+            }", Value::new_bool(true));
+    }
 
-        // TODO: test the return value (once we have variables)
+    #[test]
+    fn test_identifiers() {
+        assert_pavo_ok("let x = true; x", Value::new_bool(true));
+        assert_pavo_ok("let mut x = true; x = false; x", Value::new_bool(false));
+        assert_pavo_ok("
+            let mut x = true;
+            while x {
+                let x = false;
+                if x { return false } else { return true }
+            };
+            false", Value::new_bool(true));
+    }
+
+    #[test]
+    fn test_static_analysis() {
+        match execute_pavo("x").unwrap_err() {
+            StaticError::Analysis(AnalysisError::Free(..)) => {},
+            _ => panic!(),
+        }
+
+        match execute_pavo("x = nil").unwrap_err() {
+            StaticError::Analysis(AnalysisError::Free(..)) => {},
+            _ => panic!(),
+        }
+
+        match execute_pavo("x; let x = nil").unwrap_err() {
+            StaticError::Analysis(AnalysisError::Free(..)) => {},
+            _ => panic!(),
+        }
+
+        match execute_pavo("let x = true; x = false").unwrap_err() {
+            StaticError::Analysis(AnalysisError::Immutable(..)) => {},
+            _ => panic!(),
+        }
     }
 }

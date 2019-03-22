@@ -42,7 +42,8 @@ pub enum _Statement<'a> {
         id: Id<'a>,
         mutable: bool,
         rhs: Expression<'a>,
-    }
+    },
+    Assign(Id<'a>, Expression<'a>),
 }
 
 // Functions for generating ast nodes during desugaring. They have bogus source locations. The
@@ -153,6 +154,9 @@ fn desugar_statement<'a>(stmt: PavoStatement<'a>, buf: &mut Vec<Statement<'a>>) 
            ));
            desugar_binder_pattern(pat, buf);
         }
+        _PavoStatement::Assign(id, exp) => buf.push(Statement(
+            stmt.0, _Statement::Assign(id, exp.into())
+        )),
     }
 }
 

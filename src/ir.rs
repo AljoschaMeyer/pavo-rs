@@ -6,8 +6,13 @@
 //! of ir instructions (`Instruction`). The ir instructionss can be thought of as a "desugared"
 //! version of pavo.
 
+use std::rc::Rc;
+
+use gc::{Gc, GcCell};
+use gc_derive::{Trace, Finalize};
+
 use crate::{
-    syntax_light::{Statement, _Statement, Expression, _Expression},
+    binding_analysis::{Statement, _Statement, Expression, _Expression, DeBruijn},
     value::Value,
     context::{Computation, Context, PavoResult},
 };
@@ -17,9 +22,10 @@ use crate::{
 pub struct IrChunk {
     // The ir instructions, as a graph of basic blocks.
     basic_blocks: Vec<Vec<Instruction>>,
-    // The number of registers the code needs to work.
-    num_registers: usize,
 }
+
+type RegisterId = usize;
+type BBId = usize;
 
 // Addresses a storage slot where a computation can write `Value`s to (or from where to read them).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -30,12 +36,17 @@ enum Addr {
     // Register 1 is used by while loops to return the correct value.
     // Additional registers are used when multiple values need to be kept in memory simutaneously,
     // e.g. all the arguments that are passed to a function call.
-    Register(usize),
+    Register(RegisterId),
+    Environment(DeBruijn),
 }
 
 impl Addr {
-    fn reg(r: usize) -> Addr {
+    fn reg(r: RegisterId) -> Addr {
         Addr::Register(r)
+    }
+
+    fn env(id: DeBruijn) -> Addr {
+        Addr::Environment(id)
     }
 }
 
@@ -45,9 +56,9 @@ enum Instruction {
     /// Do nothing but evaluate to the given value and store it in the given location.
     Literal(Value, Addr),
     /// Jump to the given basic block. If the usize is `BB_RETURN`, return from the function instead.
-    Jump(usize),
+    Jump(BBId),
     /// Jump to the first basic block if the value at the Addr is truthy, else to the second one.
-    CondJump(Addr, usize, usize),
+    CondJump(Addr, BBId, BBId),
     /// Write the value at Addr `src` to the Addr `dst`.
     Write { src: Addr, dst: Addr },
     /// Swap the values in the given Addrs.
@@ -56,7 +67,7 @@ enum Instruction {
 use Instruction::*;
 
 // If this is given as an unconditional jump address, return from the function instead.
-const BB_RETURN: usize = std::usize::MAX;
+const BB_RETURN: BBId = std::usize::MAX;
 
 // BasicBlockBuilder, a helper for constructing the graph of basic blocks.
 //
@@ -66,10 +77,10 @@ struct BBB {
     // All basic blocks generated so far.
     blocks: Vec<Vec<Instruction>>,
     // Index of the currently active block.
-    current: usize,
+    current: BBId,
     // Index of the block to which a `break` statement should jump.
     // This has nothing to do with an *actual breakpoint*, but you can't stop me!
-    breakpoint: usize,
+    breakpoint: BBId,
 }
 
 impl BBB {
@@ -82,13 +93,13 @@ impl BBB {
     }
 
     // Create a new, empty basic block, and return it's id.
-    fn new_block(&mut self) -> usize {
+    fn new_block(&mut self) -> BBId {
         self.blocks.push(vec![]);
         return self.blocks.len() - 1;
     }
 
     // Set the block on which the BBB operates.
-    fn set_active_block(&mut self, bb: usize) {
+    fn set_active_block(&mut self, bb: BBId) {
         self.current = bb;
     }
 
@@ -97,11 +108,15 @@ impl BBB {
         self.blocks[self.current].push(inst);
     }
 
+    // Set register 0 to `nil`.
+    fn eval_to_nil(&mut self) {
+        self.append(Literal(Value::new_nil(), Addr::reg(0)))
+    }
+
     // Consume the builder to create an IrChunk.
     fn into_ir(self) -> IrChunk {
         IrChunk {
             basic_blocks: self.blocks,
-            num_registers: 2, // registers 0 and 1 are always reserved
         }
     }
 }
@@ -115,14 +130,14 @@ pub fn ast_to_ir(ast: Vec<Statement>) -> IrChunk {
 
 // Convert a sequence of statements into instructions and basic blocks, using the given BBB.
 // As the last instruction, jump to the basic block `jump_to`.
-fn block_to_ir(block: Vec<Statement>, jump_to: usize, bbb: &mut BBB) {
+fn block_to_ir(block: Vec<Statement>, jump_to: BBId, bbb: &mut BBB) {
     let len = block.len();
     for statement in block.into_iter() {
         statement_to_ir(statement, bbb);
     }
 
     if len == 0 {
-        bbb.append(Literal(Value::new_nil(), Addr::reg(0)));
+        bbb.eval_to_nil();
     }
 
     bbb.append(Jump(jump_to));
@@ -140,7 +155,11 @@ fn statement_to_ir(statement: Statement, bbb: &mut BBB) {
             exp_to_ir(exp, bbb);
             bbb.append(Jump(bbb.breakpoint));
         }
-        _Statement::Let { .. } => unimplemented!("won't exist after implementing binding resolution"),
+        _Statement::Assign(de_bruijn, rhs) => {
+            exp_to_ir(rhs, bbb);
+            bbb.append(Write { src: Addr::reg(0), dst: Addr::env(de_bruijn) });
+            bbb.eval_to_nil();
+        }
     }
 }
 
@@ -153,7 +172,9 @@ fn exp_to_ir(exp: Expression, bbb: &mut BBB) {
         _Expression::Bool(b) => {
             bbb.append(Literal(Value::new_bool(b), Addr::reg(0)));
         }
-        _Expression::Id(id) => unimplemented!("won't exist after implementing binding resolution"),
+        _Expression::Id(id) => {
+            bbb.append(Write {src: Addr::env(id), dst: Addr::reg(0)});
+        },
         _Expression::If(cond, then_block, else_block) => {
             exp_to_ir(*cond, bbb);
 
@@ -215,37 +236,117 @@ struct LocalState {
     // "pc" stands for "program counter".
     //
     // First usize is the basic block, second one the offset in the basic block.
-    pc: (usize, usize),
+    pc: (BBId, usize),
     // Temporary storage slots for `Value`s.
-    registers: Box<[Value]>,
+    registers: Vec<Value>,
 }
 
 impl LocalState {
     // Create and initialize a `LocalState` suitable for executing the given chunk.
-    fn new(chunk: &IrChunk) -> LocalState {
-        // Allocate the registers and fill them with nil values.
-        let mut registers: Vec<Value> = Vec::with_capacity(chunk.num_registers);
-        registers.resize_with(chunk.num_registers, Default::default);
-
+    fn new(_chunk: &IrChunk) -> LocalState {
         LocalState {
             pc: (0, 0),
-            registers: registers.into_boxed_slice(),
+            registers: vec![Value::default(), Value::default()], // first two registers are special
         }
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Trace, Finalize)]
+pub struct Environment {
+    // The bindings local to this environment.
+    bindings: Vec<Value>,
+    // (Mutable) access to the parent binding, which is `None` for the top-level environment.
+    parent: Option<Gc<GcCell<Environment>>>,
+}
+
+impl Environment {
+    // Look up the value addressed by the given DeBruijnPair. Panics if the address is invalid
+    // (which only happens if compilation is buggy).
+    pub fn get(&self, mut addr: DeBruijn) -> Value {
+        if addr.up == 0 {
+            self.bindings[addr.id].clone()
+        } else {
+            addr.up -= 1;
+            self.parent.as_ref().unwrap().borrow().get(addr)
+        }
+    }
+
+    // Set the value at the given address. Panics if the address is invalid (which only happens if
+    // compilation is buggy).
+    pub fn set(&mut self, mut addr: DeBruijn, val: Value) {
+        if addr.up == 0 {
+            if addr.id >= self.bindings.len()  {
+                self.bindings.resize_with(addr.id + 1, Default::default);
+            }
+            self.bindings[addr.id] = val;
+        } else {
+            addr.up -= 1;
+            self.parent.as_ref().unwrap().borrow_mut().set(addr, val);
+        }
+    }
+
+    pub fn child(parent: Gc<GcCell<Environment>>) -> Gc<GcCell<Environment>> {
+        let env = Environment::root();
+        env.borrow_mut().parent = Some(parent);
+        env
+    }
+
+    pub fn root() -> Gc<GcCell<Environment>> {
+        Gc::new(GcCell::new(Environment {
+            bindings: vec![],
+            parent: None,
+        }))
+    }
+}
+
+// An IrChunk together with an environment. This is a runtime value.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Trace, Finalize)]
+pub struct Closure {
+    #[unsafe_ignore_trace]
+    fun: Rc<IrChunk>,
+    env: Gc<GcCell<Environment>>,
+    // The basic block at which to begin execution of the `fun`.
+    entry: usize,
+}
+
+impl Closure {
+    /// Create a closure suitable for executing the main body of a script.
+    ///
+    /// Behaves as if the script was the body of a zero-argument function defined in the lexical
+    /// scope of the (given) top-level environment.
+    pub fn from_script_chunk(script: IrChunk) -> Closure {
+        Closure {
+            fun: Rc::new(script),
+            env: Environment::child(top_level()),
+            entry: 0,
+        }
+    }
+}
+
+// TODO XXX This is temporary...
+fn top_level() -> Gc<GcCell<Environment>> {
+    Environment::root()
+}
+
 impl Addr {
     // Use an `Addr` to retrieve a value. This can not fail, unless we created erroneous ir code.
-    fn load(self, local: &LocalState) -> Value {
+    fn load(self, local: &LocalState, env: &Gc<GcCell<Environment>>) -> Value {
         match self {
             Addr::Register(index) => local.registers[index].clone(),
+            Addr::Environment(de_bruijn) => env.borrow().get(de_bruijn),
         }
     }
 
     // Use an `Addr` to store a value. This can not fail, unless we created erroneous vm code.
-    fn store(self, val: Value, local: &mut LocalState) {
+    fn store(self, val: Value, local: &mut LocalState, env: &Gc<GcCell<Environment>>) {
         match self {
-            Addr::Register(index) => local.registers[index] = val,
+            Addr::Register(index) => {
+                if index >= local.registers.len()  {
+                    local.registers.resize_with(index + 1, Default::default);
+                }
+                local.registers[index] = val;
+            }
+            Addr::Environment(de_bruijn) => env.borrow_mut().set(de_bruijn, val),
         }
     }
 }
@@ -255,43 +356,43 @@ impl Addr {
 // We will remove this impl at a later point: Once we implement value bindings (aka variables),
 // we need an environment for computation. An IrChunk only stores the raw code, but not the
 // corresponding environment (it's a function, not a closure).
-impl Computation for IrChunk {
+impl Computation for Closure {
     // To perform the computation, interpret the instructions of the chunk.
     //
     // Since at this point we only implement the case of running a full pavo file, there is no
     // notion of arguments and we can fully ignore them.
     fn compute<Args: IntoIterator<Item = Value>>(&self, _: Args, _: &mut Context) -> PavoResult {
-        let mut state = LocalState::new(self);
+        let mut state = LocalState::new(&self.fun);
 
         loop {
             state.pc.1 += 1;
-            match &self.basic_blocks[state.pc.0][state.pc.1 - 1] {
-                Literal(val, dst) => dst.store(val.clone(), &mut state),
+            match &self.fun.basic_blocks[state.pc.0][state.pc.1 - 1] {
+                Literal(val, dst) => dst.store(val.clone(), &mut state, &self.env),
 
                 Jump(block) => {
                     if *block == BB_RETURN {
                         // register 0 holds the evaluation result of the previously executed statement
-                        return Ok(Addr::reg(0).load(&state));
+                        return Ok(Addr::reg(0).load(&state, &self.env));
                     } else {
                         state.pc = (*block, 0);
                     }
                 }
 
                 CondJump(cond, then_block, else_block) => {
-                    if cond.load(&state).truthy() {
+                    if cond.load(&state, &self.env).truthy() {
                         state.pc = (*then_block, 0);
                     } else {
                         state.pc = (*else_block, 0);
                     }
                 }
 
-                Write { src, dst } => dst.store(src.load(&mut state), &mut state),
+                Write { src, dst } => dst.store(src.load(&state, &self.env), &mut state, &self.env),
 
                 Swap(a, b) => {
-                    let val_a = a.load(&mut state);
-                    let val_b = b.load(&mut state);
-                    a.store(val_b, &mut state);
-                    b.store(val_a, &mut state);
+                    let val_a = a.load(&state, &self.env);
+                    let val_b = b.load(&state, &self.env);
+                    a.store(val_b, &mut state, &self.env);
+                    b.store(val_a, &mut state, &self.env);
                 }
             }
         }

@@ -40,6 +40,7 @@ pub enum _Statement<'a> {
     Return(Expression<'a>),
     Break(Expression<'a>),
     Let(BinderPattern<'a>, Expression<'a>),
+    Assign(Id<'a>, Expression<'a>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

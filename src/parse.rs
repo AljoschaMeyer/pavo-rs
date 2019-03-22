@@ -2,11 +2,12 @@
 //
 // The parsers consume all trailing whitespace, but do not skip over leading whitespace.
 
+use failure_derive::Fail;
 use nom::{
     {line_ending, not_line_ending, multispace1, eof},
     {value, tag, take_while1, one_of},
     {do_parse, alt, many0, many1, opt, fold_many0, many_m_n},
-    {delimited, separated_list_complete},
+    {delimited, separated_list},
     {named, not, map, try_parse},
     types::CompleteStr, IResult, Err, Context, ErrorKind,
 };
@@ -18,6 +19,7 @@ use crate::syntax::{
     Statement, _Statement,
     BinderPattern, _BinderPattern,
 };
+use crate::util::SrcLocation;
 
 type Span<'a> = LocatedSpan<CompleteStr<'a>>;
 
@@ -51,6 +53,7 @@ named!(rparen(Span) -> (), do_parse!(tag!(")") >> ws0 >> (())));
 named!(land(Span) -> (), do_parse!(tag!("&&") >> ws0 >> (())));
 named!(lor(Span) -> (), do_parse!(tag!("||") >> ws0 >> (())));
 named!(blank(Span) -> (), do_parse!(tag!("_") >> ws0 >> (())));
+named!(assign(Span) -> (), do_parse!(tag!("=") >> ws0 >> (())));
 
 fn is_id_char(c: char) -> bool {
     return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c == '_');
@@ -96,7 +99,8 @@ fn is_kw(id: &str) -> bool {
     id == "nil" || id == "true" || id == "false" || id == "if" || id == "else" ||
     id == "return" || id == "break" || id == "while" || id == "mut" || id == "loop" ||
     id == "case" || id == "throw" || id == "try" || id == "catch" || id == "finally" ||
-    id == "async" || id == "await" || id == "for" || id == "nan" || id == "inf"
+    id == "async" || id == "await" || id == "for" || id == "nan" || id == "inf" ||
+    id == "let"
 }
 
 named!(kw_nil(Span) -> (), do_parse!(
@@ -162,6 +166,13 @@ named!(kw_mut(Span) -> (), do_parse!(
     (())
 ));
 
+named!(kw_let(Span) -> (), do_parse!(
+    tag!("let") >>
+    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
+    ws0 >>
+    (())
+));
+
 named!(exp_id(Span) -> Expression, do_parse!(
     pos: position!() >>
     the_id: id >>
@@ -182,7 +193,7 @@ named!(exp_bool(Span) -> Expression, do_parse!(
 
 // Expressions that do not contain other expressions.
 named!(exp_atomic(Span) -> Expression, alt!(
-    exp_id | exp_nil | exp_bool
+    exp_nil | exp_bool | exp_id
 ));
 
 named!(exp_if(Span) -> Expression, do_parse!(
@@ -286,13 +297,33 @@ named!(stmt_break(Span) -> Statement, do_parse!(
     (Statement(pos, _Statement::Break(expr)))
 ));
 
-named!(stmt(Span) -> Statement, alt!(
-    stmt_exp |
-    stmt_return |
-    stmt_break
+named!(stmt_let(Span) -> Statement, do_parse!(
+    pos: position!() >>
+    kw_let >>
+    pat: binder_pat >>
+    assign >>
+    expr: exp >>
+    (Statement(pos, _Statement::Let(pat, expr)))
 ));
 
-named!(stmts0(Span) -> Vec<Statement>, separated_list_complete!(semi, stmt));
+named!(stmt_assign(Span) -> Statement, do_parse!(
+    pos: position!() >>
+    the_id: id >>
+    assign >>
+    expr: exp >>
+    ws0 >>
+    (Statement(pos, _Statement::Assign(the_id, expr)))
+));
+
+named!(stmt(Span) -> Statement, alt!(
+    stmt_assign |
+    stmt_exp |
+    stmt_return |
+    stmt_break |
+    stmt_let
+));
+
+named!(stmts0(Span) -> Vec<Statement>, separated_list!(semi, stmt));
 
 named!(block(Span) -> Vec<Statement>, delimited!(lbrace, stmts0, rbrace));
 
@@ -319,9 +350,34 @@ named!(binder_pat(Span) -> BinderPattern, alt!(
     binder_blank
 ));
 
-named!(pub script(Span) -> Vec<Statement>, do_parse!(
+named!(p_script(Span) -> Vec<Statement>, do_parse!(
     ws0 >>
     sts: stmts0 >>
     eof!() >>
     (sts)
 ));
+
+pub fn script<'a>(i: Span<'a>) -> Result<Vec<Statement>, ParseError> {
+    match p_script(i) {
+        Ok((_, stmts)) => return Ok(stmts),
+        Err(Err::Incomplete(_)) => unreachable!(),
+        Err(Err::Error(cx)) | Err(Err::Failure(cx)) => {
+            let location = match cx {
+                Context::Code(i, _) => SrcLocation::from_span(&i),
+                // Context::List(cxs) => SrcLocation::from_span(cxs[0].0),
+            };
+
+            return Err(ParseError {
+                location,
+                kind: cx.into_error_kind(),
+            });
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Hash, Fail)]
+#[fail(display = "Parse error at {:?}: {:?}", location, kind)]
+pub struct ParseError {
+    location: SrcLocation,
+    kind: ErrorKind,
+}
