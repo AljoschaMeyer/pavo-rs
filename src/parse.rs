@@ -45,6 +45,21 @@ named!(ws1(Span) -> (), do_parse!(
     (())
 ));
 
+macro_rules! kw(
+    ($i:expr, $kw:expr) => ({
+        do_parse!(
+            $i,
+            tag!($kw) >>
+            not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
+            ws0 >>
+            (())
+        )
+    });
+    ($i:expr, $f:expr) => (
+        opt!($i, call!($f));
+    );
+);
+
 named!(semi(Span) -> (), do_parse!(tag!(";") >> ws0 >> (())));
 named!(lbrace(Span) -> (), do_parse!(tag!("{") >> ws0 >> (())));
 named!(rbrace(Span) -> (), do_parse!(tag!("}") >> ws0 >> (())));
@@ -103,76 +118,6 @@ fn is_kw(id: &str) -> bool {
     id == "let"
 }
 
-named!(kw_nil(Span) -> (), do_parse!(
-    tag!("nil") >>
-    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
-    ws0 >>
-    (())
-));
-
-named!(kw_true(Span) -> (), do_parse!(
-    tag!("true") >>
-    not!(take_while1!(is_id_char)) >>
-    ws0 >>
-    (())
-));
-
-named!(kw_false(Span) -> (), do_parse!(
-    tag!("false") >>
-    not!(take_while1!(is_id_char)) >>
-    ws0 >>
-    (())
-));
-
-named!(kw_if(Span) -> (), do_parse!(
-    tag!("if") >>
-    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
-    ws0 >>
-    (())
-));
-
-named!(kw_else(Span) -> (), do_parse!(
-    tag!("else") >>
-    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
-    ws0 >>
-    (())
-));
-
-named!(kw_return(Span) -> (), do_parse!(
-    tag!("return") >>
-    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
-    ws0 >>
-    (())
-));
-
-named!(kw_break(Span) -> (), do_parse!(
-    tag!("break") >>
-    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
-    ws0 >>
-    (())
-));
-
-named!(kw_while(Span) -> (), do_parse!(
-    tag!("while") >>
-    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
-    ws0 >>
-    (())
-));
-
-named!(kw_mut(Span) -> (), do_parse!(
-    tag!("mut") >>
-    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
-    ws0 >>
-    (())
-));
-
-named!(kw_let(Span) -> (), do_parse!(
-    tag!("let") >>
-    not!(take_while1!(is_id_char)) /* ensure this is not a prefix of an identifier*/ >>
-    ws0 >>
-    (())
-));
-
 named!(exp_id(Span) -> Expression, do_parse!(
     pos: position!() >>
     the_id: id >>
@@ -181,13 +126,13 @@ named!(exp_id(Span) -> Expression, do_parse!(
 
 named!(exp_nil(Span) -> Expression, do_parse!(
     pos: position!() >>
-    kw_nil >>
+    kw!("nil") >>
     (Expression(pos, _Expression::Nil))
 ));
 
 named!(exp_bool(Span) -> Expression, do_parse!(
     pos: position!() >>
-    b: alt!(value!(true, kw_true) | value!(false, kw_false)) >>
+    b: alt!(value!(true, kw!("true")) | value!(false, kw!("false"))) >>
     (Expression(pos, _Expression::Bool(b)))
 ));
 
@@ -198,12 +143,12 @@ named!(exp_atomic(Span) -> Expression, alt!(
 
 named!(exp_if(Span) -> Expression, do_parse!(
     pos: position!() >>
-    kw_if >>
+    kw!("if") >>
     cond: map!(exp, Box::new) >>
     if_block: block >>
     else_block: map!(
         opt!(do_parse!(
-            kw_else >>
+            kw!("else") >>
             else_block: alt!(
                 block |
                 map!(exp_blocky, |e| {
@@ -219,15 +164,33 @@ named!(exp_if(Span) -> Expression, do_parse!(
 
 named!(exp_while(Span) -> Expression, do_parse!(
     pos: position!() >>
-    kw_while >>
+    kw!("while") >>
     cond: map!(exp, Box::new) >>
     loop_block: block >>
     (Expression(pos, _Expression::While(cond, loop_block)))
 ));
 
+named!(exp_try(Span) -> Expression, do_parse!(
+    pos: position!() >>
+    kw!("try") >>
+    try_block: block >>
+    kw!("catch") >>
+    pat: binder_pat >>
+    catch_block: block >>
+    finally_block: map!(
+        opt!(do_parse!(
+            kw!("finally") >>
+            finally_block: block >>
+            (finally_block)
+        )),
+        |blck| blck.unwrap_or(vec![])
+    ) >>
+    (Expression(pos, _Expression::Try(try_block, pat, catch_block, finally_block)))
+));
+
 // Expressions that can follow an `else` keyword without being enclosed in braces.
 named!(exp_blocky(Span) -> Expression, alt!(
-    exp_if | exp_while
+    exp_if | exp_while | exp_try
 ));
 
 // 100 is the precedence level
@@ -285,21 +248,21 @@ named!(stmt_exp(Span) -> Statement, do_parse!(
 
 named!(stmt_return(Span) -> Statement, do_parse!(
     pos: position!() >>
-    kw_return >>
+    kw!("return") >>
     expr: map!(opt!(exp), |maybe_exp| maybe_exp.unwrap_or(Expression::nil())) >>
     (Statement(pos, _Statement::Return(expr)))
 ));
 
 named!(stmt_break(Span) -> Statement, do_parse!(
     pos: position!() >>
-    kw_break >>
+    kw!("break") >>
     expr: map!(opt!(exp), |maybe_exp| maybe_exp.unwrap_or(Expression::nil())) >>
     (Statement(pos, _Statement::Break(expr)))
 ));
 
 named!(stmt_let(Span) -> Statement, do_parse!(
     pos: position!() >>
-    kw_let >>
+    kw!("let") >>
     pat: binder_pat >>
     assign >>
     expr: exp >>
@@ -328,7 +291,7 @@ named!(stmts0(Span) -> Vec<Statement>, separated_list!(semi, stmt));
 named!(block(Span) -> Vec<Statement>, delimited!(lbrace, stmts0, rbrace));
 
 named!(pattern_id(Span) -> (Id, bool), do_parse!(
-    mutable: map!(opt!(kw_mut), |maybe| maybe.is_some()) >>
+    mutable: map!(opt!(kw!("mut")), |maybe| maybe.is_some()) >>
     binder: id >>
     ((binder, mutable))
 ));
