@@ -29,6 +29,8 @@ pub enum _Expression<'a> {
     Land(Box<Expression<'a>>, Box<Expression<'a>>),
     Lor(Box<Expression<'a>>, Box<Expression<'a>>),
     While(Box<Expression<'a>>, Vec<Statement<'a>>),
+    Try(Vec<Statement<'a>>, BinderPattern<'a>, Vec<Statement<'a>>, Vec<Statement<'a>>),
+    QM(Box<Expression<'a>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +41,7 @@ pub enum _Statement<'a> {
     Expression(Expression<'a>),
     Return(Expression<'a>),
     Break(Expression<'a>),
+    Throw(Expression<'a>),
     Let(BinderPattern<'a>, Expression<'a>),
     Assign(Id<'a>, Expression<'a>),
 }
@@ -52,12 +55,42 @@ pub enum _BinderPattern<'a> {
     Id(Id<'a>, bool), // true iff mutable
 }
 
+impl<'a> BinderPattern<'a> {
+    pub fn blank() -> BinderPattern<'static> {
+        BinderPattern(
+            LocatedSpan::new(CompleteStr("")),
+            _BinderPattern::Blank
+        )
+    }
+}
+
 // Used during parsing to generate default `nil`s for missing stuff
 impl<'a> Expression<'a> {
     pub fn nil() -> Expression<'static> {
         Expression(
             LocatedSpan::new(CompleteStr("")),
             _Expression::Nil,
+        )
+    }
+
+    pub fn try_(
+        try_block: Vec<Statement<'a>>,
+        pat: BinderPattern<'a>,
+        catch_block: Vec<Statement<'a>>,
+        finally_block: Vec<Statement<'a>>
+    ) -> Expression<'a> {
+        Expression(
+            LocatedSpan::new(CompleteStr("")),
+            _Expression::Try(try_block, pat, catch_block, finally_block),
+        )
+    }
+}
+
+impl<'a> Statement<'a> {
+    pub fn exp(expr: Expression<'a>) -> Statement<'a> {
+        Statement(
+            LocatedSpan::new(CompleteStr("")),
+            _Statement::Expression(expr)
         )
     }
 }

@@ -166,6 +166,8 @@ pub enum _Expression<'a> {
     Id(DeBruijn),
     If(Box<Expression<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     While(Box<Expression<'a>>, Vec<Statement<'a>>),
+    Try(Vec<Statement<'a>>, DeBruijn, Vec<Statement<'a>>, Vec<Statement<'a>>),
+    Thrown,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -176,6 +178,7 @@ pub enum _Statement<'a> {
     Expression(Expression<'a>),
     Return(Expression<'a>),
     Break(Expression<'a>),
+    Throw(Expression<'a>),
     Assign(DeBruijn, Expression<'a>),
 }
 
@@ -210,6 +213,9 @@ fn do_analyze_statement<'a>(stmt: LightStatement<'a>, s: &mut Stack) -> Result<S
         _LightStatement::Break(exp) => Ok(Statement(
             stmt.0, _Statement::Break(do_analyze_exp(exp, s)?)
         )),
+        _LightStatement::Throw(exp) => Ok(Statement(
+            stmt.0, _Statement::Throw(do_analyze_exp(exp, s)?)
+        )),
         _LightStatement::Let { id, mutable, rhs } => {
             let binding_id = s.add_binding(id.0.fragment.0, mutable);
             Ok(Statement(stmt.0, _Statement::Assign(DeBruijn { up: 0, id: binding_id}, do_analyze_exp(rhs, s)?)))
@@ -241,6 +247,17 @@ fn do_analyze_exp<'a>(exp: LightExpression<'a>, s: &mut Stack) -> Result<Express
                 do_analyze_statements(body, s)?
             )))
         }
+        _LightExpression::Try(try_block, id, caught_block, finally_block) => {
+            let ret_try_block = do_analyze_statements(try_block, s)?;
+            s.add_binding(id.0.fragment.0, false);
+            Ok(Expression(exp.0, _Expression::Try(
+                ret_try_block,
+                s.resolve_binding(&id, false).unwrap(),
+                do_analyze_statements(caught_block, s)?,
+                do_analyze_statements(finally_block, s)?
+            )))
+        }
+        _LightExpression::Thrown => Ok(Expression(exp.0, _Expression::Thrown)),
     }
 }
 

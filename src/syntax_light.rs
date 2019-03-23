@@ -28,6 +28,8 @@ pub enum _Expression<'a> {
     Id(Id<'a>),
     If(Box<Expression<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     While(Box<Expression<'a>>, Vec<Statement<'a>>),
+    Try(Vec<Statement<'a>>, Id<'a>, Vec<Statement<'a>>, Vec<Statement<'a>>),
+    Thrown, // Evaluates to the last value that has been thrown - has no counterpart in real pavo
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +40,7 @@ pub enum _Statement<'a> {
     Expression(Expression<'a>),
     Return(Expression<'a>),
     Break(Expression<'a>),
+    Throw(Expression<'a>),
     Let {
         id: Id<'a>,
         mutable: bool,
@@ -70,6 +73,13 @@ impl<'a> Expression<'a> {
             _Expression::Id(the_id)
         )
     }
+
+    fn thrown() -> Expression<'static> {
+        Expression(
+            LocatedSpan::new(CompleteStr("")),
+            _Expression::Thrown,
+        )
+    }
 }
 
 impl<'a> Statement<'a> {
@@ -89,7 +99,7 @@ impl<'a> Statement<'a> {
 }
 
 impl<'a> From<PavoExpression<'a>> for Expression<'a> {
-    fn from(exp: PavoExpression<'a>) -> Self {
+    fn from(exp: PavoExpression<'a>) -> Expression<'a> {
         Expression(exp.0, match exp.1 {
             _PavoExpression::Nil => _Expression::Nil,
             _PavoExpression::Bool(b) => _Expression::Bool(b),
@@ -121,6 +131,23 @@ impl<'a> From<PavoExpression<'a>> for Expression<'a> {
                 cond.into(),
                 desugar_statements(body),
             ),
+            _PavoExpression::Try(try_block, binder, caught_block, finally_block) => {
+                let mut caught_buf = vec![Statement::let_(Id::new(PAT), false, Expression::thrown())];
+                desugar_binder_pattern(binder, &mut caught_buf);
+                do_desugar_statements(caught_block, &mut caught_buf);
+                _Expression::Try(
+                    desugar_statements(try_block),
+                    Id::new(PAT),
+                    caught_buf,
+                    desugar_statements(finally_block)
+                )
+            },
+            _PavoExpression::QM(inner) => Self::from(PavoExpression::try_(
+                vec![PavoStatement::exp((*inner).into())],
+                BinderPattern::blank(),
+                vec![PavoStatement::exp(PavoExpression::nil())],
+                vec![]
+            )).1,
         })
     }
 }
@@ -148,11 +175,15 @@ fn desugar_statement<'a>(stmt: PavoStatement<'a>, buf: &mut Vec<Statement<'a>>) 
         _PavoStatement::Break(exp) => buf.push(Statement(
             stmt.0, _Statement::Break(exp.into())
         )),
+        _PavoStatement::Throw(exp) => buf.push(Statement(
+            stmt.0, _Statement::Throw(exp.into())
+        )),
         _PavoStatement::Let(pat, rhs) => {
             buf.push(Statement(
-               stmt.0, _Statement::Let { id: Id::new(PAT), mutable: true, rhs: rhs.into() }
-           ));
-           desugar_binder_pattern(pat, buf);
+                stmt.0,
+                _Statement::Let { id: Id::new(PAT), mutable: false, rhs: rhs.into() }
+            ));
+            desugar_binder_pattern(pat, buf);
         }
         _PavoStatement::Assign(id, exp) => buf.push(Statement(
             stmt.0, _Statement::Assign(id, exp.into())

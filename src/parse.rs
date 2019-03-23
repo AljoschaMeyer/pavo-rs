@@ -69,6 +69,7 @@ named!(land(Span) -> (), do_parse!(tag!("&&") >> ws0 >> (())));
 named!(lor(Span) -> (), do_parse!(tag!("||") >> ws0 >> (())));
 named!(blank(Span) -> (), do_parse!(tag!("_") >> ws0 >> (())));
 named!(assign(Span) -> (), do_parse!(tag!("=") >> ws0 >> (())));
+named!(qm(Span) -> (), do_parse!(tag!("?") >> ws0 >> (())));
 
 fn is_id_char(c: char) -> bool {
     return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c == '_');
@@ -193,15 +194,76 @@ named!(exp_blocky(Span) -> Expression, alt!(
     exp_if | exp_while | exp_try
 ));
 
+// 1300 is the precedence level
+// `::`
+// named!(exp_binop_1300(Span) -> Expression, non_leftrecursive_exp);
+named!(exp_binop_1300(Span) -> Expression, do_parse!(expr: non_leftrecursive_exp >> (expr)));
+
+// 1200 is the precedence level
+// `field access`
+named!(exp_binop_1200(Span) -> Expression, do_parse!(expr: exp_binop_1300 >> (expr)));
+
+// 1100 is the precedence level
+// `call, index`
+named!(exp_binop_1100(Span) -> Expression, do_parse!(expr: exp_binop_1200 >> (expr)));
+
+// 1000 is the precedence level
+// `-, !` (unary)
+named!(exp_binop_1000(Span) -> Expression, do_parse!(expr: exp_binop_1100 >> (expr)));
+
+// 900 is the precedence level
+// `?`
+named!(exp_binop_900(Span) -> Expression, do_parse!(
+    pos: position!() >>
+    first: exp_binop_1000 >>
+    fold: fold_many0!(
+        do_parse!(
+            qm >>
+            (Expression::nil())
+        ),
+        first,
+        |acc, _| Expression(pos, _Expression::QM(Box::new(acc)))
+    ) >>
+    (fold)
+));
+
+// 800 is the precedence level
+// `*, /, %`
+named!(exp_binop_800(Span) -> Expression, do_parse!(expr: exp_binop_900 >> (expr)));
+
+// 700 is the precedence level
+// `+, -` (binary operators)
+named!(exp_binop_700(Span) -> Expression, do_parse!(expr: exp_binop_800 >> (expr)));
+
+// 600 is the precedence level
+// `<<, >>`
+named!(exp_binop_600(Span) -> Expression, do_parse!(expr: exp_binop_700 >> (expr)));
+
+// 500 is the precedence level
+// `&`
+named!(exp_binop_500(Span) -> Expression, do_parse!(expr: exp_binop_600 >> (expr)));
+
+// 400 is the precedence level
+// `^`
+named!(exp_binop_400(Span) -> Expression, do_parse!(expr: exp_binop_500 >> (expr)));
+
+// 300 is the precedence level
+// `|`
+named!(exp_binop_300(Span) -> Expression, do_parse!(expr: exp_binop_400 >> (expr)));
+
+// 200 is the precedence level
+// `==, !=, <, <=, >, >=`
+named!(exp_binop_200(Span) -> Expression, do_parse!(expr: exp_binop_300 >> (expr)));
+
 // 100 is the precedence level
 // `&&`
 named!(exp_binop_100(Span) -> Expression, do_parse!(
     pos: position!() >>
-    first: non_leftrecursive_exp >>
+    first: exp_binop_200 >>
     fold: fold_many0!(
         do_parse!(
             land >>
-            expr: non_leftrecursive_exp >>
+            expr: exp_binop_200 >>
             (expr)
         ),
         first,
@@ -226,6 +288,7 @@ named!(non_leftrecursive_exp(Span) -> Expression, alt!(
 ));
 
 // This is the left-recursive expression of the lowest precedence level
+// `||`
 named!(exp(Span) -> Expression, do_parse!(
     pos: position!() >>
     first: exp_binop_100 >>
@@ -260,6 +323,13 @@ named!(stmt_break(Span) -> Statement, do_parse!(
     (Statement(pos, _Statement::Break(expr)))
 ));
 
+named!(stmt_throw(Span) -> Statement, do_parse!(
+    pos: position!() >>
+    kw!("throw") >>
+    expr: map!(opt!(exp), |maybe_exp| maybe_exp.unwrap_or(Expression::nil())) >>
+    (Statement(pos, _Statement::Throw(expr)))
+));
+
 named!(stmt_let(Span) -> Statement, do_parse!(
     pos: position!() >>
     kw!("let") >>
@@ -283,6 +353,7 @@ named!(stmt(Span) -> Statement, alt!(
     stmt_exp |
     stmt_return |
     stmt_break |
+    stmt_throw |
     stmt_let
 ));
 

@@ -72,6 +72,14 @@ mod tests {
         }
     }
 
+    fn assert_pavo_thrown(src: &str, expected: Value) {
+        match execute_pavo(src) {
+            Err(err) => panic!("Unexpected parser error: {:?}", err),
+            Ok(Ok(val)) => panic!("Expected to throw, but returned: {:?}", val),
+            Ok(Err((thrown, _))) => assert_eq!(thrown, expected),
+        }
+    }
+
     #[test]
     fn test_nil() {
         assert_pavo_ok("nil", Value::new_nil());
@@ -182,5 +190,28 @@ mod tests {
             StaticError::Analysis(AnalysisError::Immutable(..)) => {},
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn test_try_catch_finally() {
+        assert_pavo_thrown("throw; false", Value::new_nil());
+        assert_pavo_thrown("throw true; false", Value::new_bool(true));
+        assert_pavo_ok("try { true } catch _ {}", Value::new_bool(true));
+        assert_pavo_ok("try { throw true } catch _ { false }", Value::new_bool(false));
+        assert_pavo_ok("try { throw true } catch x { x }", Value::new_bool(true));
+        assert_pavo_ok("try { throw true } catch mut x { x = false; x }", Value::new_bool(false));
+        assert_pavo_ok("try {} catch x { x }", Value::new_nil());
+        assert_pavo_ok("try {} catch x { x } finally { true }", Value::new_bool(true));
+        assert_pavo_ok("try { throw false } catch x { x } finally { true }", Value::new_bool(true));
+    }
+
+    #[test]
+    fn test_questionmark() {
+        assert_pavo_thrown("throw true?", Value::new_bool(true));
+        assert_pavo_thrown("throw true?; false", Value::new_bool(true));
+        assert_pavo_ok("try { if true {throw false}?; true } catch _ {false}", Value::new_bool(true));
+        assert_pavo_ok("true && if true {throw true; true}?", Value::new_bool(false));
+        assert_pavo_ok("true???", Value::new_bool(true));
+        assert_pavo_ok("false???; true", Value::new_bool(true));
     }
 }

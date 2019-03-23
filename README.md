@@ -53,6 +53,10 @@ The `return x` statement exits the current function, making it evaluate to `x`. 
 
 The `break x` statement leaves the body of the enclosing loop, making it evaluate to `x`. If the expression `x` is omitted, it evaluates to `nil`. If there is no enclosing loop, `break x` is equivalent to `return x`.
 
+#### Throw
+
+The `throw x` statement throws the expression `x`. If the expression `x` is omitted, it throws `nil`. A thrown value is propagated through the call stack until it is caught in a try-catch expression. If the value is not caught at all, execution of the pavo script ends.
+
 #### Assign
 
 The syntax for assignment is `some_identifier = some_expression`. The identifier must be bound by a mutable binding, anything else (free identifier or immutable binding) is a syntax error. The assign statement evaluates the expression and rebinds the identifier to the resulting value. The statement itself evaluates to `nil`.
@@ -135,6 +139,7 @@ An if-expression consists of the keyword `if`, followed by a *condition* (an exp
 
 - if-expressions
 - while-expressions
+- try-expressions
 
 Evaluation of an if-expression begins by evaluating the *condition*. If it is *truthy* (neither `nil` nor `false`), then evaluate the following block. If the condition is not truthy, then evaluate the else-block (or the else-blocky-expression) instead. If the condition is not truthy and there is no else-block, the if-expression evaluates to `nil`.
 
@@ -154,14 +159,50 @@ A while-expression consists of the keyword `while`, followed by a *condition* (a
 
 Evaluation of a while-expression begins by evaluating the *condition*. If it is *truthy* (neither `nil` nor `false`), then evaluate the following block. This process is repeated until the condition becomes falsey (`nil` or `false`). The while-expression evaluates to the value of the last statement of the body in the last evaluation of the body. If the body is evaluated zero times, the while-expression evaluates to `nil`.
 
+#### Try
+
+The syntax for try-expressions is `try { statements... } catch binder_pattern { statements...} finally { statements... }`, the `finally { statements... }` part is optional. The expressions starts evaluating the statements in the try-block. If any of them throws, the thrown value is matched against the binder pattern, and then the catch-block is executed. When execution reached the end of either the try-block or the catch-block, execution resumes with the finally-block. If the finally-block was omitted, the expressions behaves as if there was an empty finally-block. If the finally-block is empty, the try-expression evaluates to the result of the try-block if it didn't throw, or the result of the catch-block otherwise. If there is at least one statement in the finally-block, the expression evaluates to the result of the finally-block.
+
+```pavo
+try {
+  throw true
+} catch _ {
+  false
+}
+# evaluates to false
+```
+```pavo
+try {
+  throw false
+} catch x {
+  x
+} finally {
+  true
+}
+# evaluates to true
+```
+
 #### Operators
 
 All operators in pavo are left-associative. The list of operator precendeces, from higher to lower precedence:
 
+- `?`
 - `&&`
 - `||`
 
 For example, `a || b && c` is parsed as `a || (b && c)` (`&&` has higher precedence than `||`), whereas `a || b || c` is parsed as `(a || b) || c` (equal precedence, so it defaults to left-associativity).
+
+##### `?` (Questionmark Operator)
+
+This is an unary postfix operator, `x?` is equivalent to
+
+```pavo
+try {
+  x
+} catch _ {
+  nil
+}
+```
 
 ##### `&&` (Logical And)
 

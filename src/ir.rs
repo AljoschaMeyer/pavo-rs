@@ -14,7 +14,7 @@ use gc_derive::{Trace, Finalize};
 use crate::{
     binding_analysis::{Statement, _Statement, Expression, _Expression, DeBruijn},
     value::Value,
-    context::{Computation, Context, PavoResult},
+    context::{Computation, Context, PavoResult, DbgTrace},
 };
 
 /// A control flow graph of basic blocks, each consisting of a sequence of statements.
@@ -57,6 +57,8 @@ enum Instruction {
     Literal(Value, Addr),
     /// Jump to the given basic block. If the usize is `BB_RETURN`, return from the function instead.
     Jump(BBId),
+    /// Jump to the given basic block. If the usize is `BB_RETURN`, throw from the function instead.
+    Throw(BBId),
     /// Jump to the first basic block if the value at the Addr is truthy, else to the second one.
     CondJump(Addr, BBId, BBId),
     /// Write the value at Addr `src` to the Addr `dst`.
@@ -81,6 +83,8 @@ struct BBB {
     // Index of the block to which a `break` statement should jump.
     // This has nothing to do with an *actual breakpoint*, but you can't stop me!
     breakpoint: BBId,
+    // Index of the block to which a trap instruction should jump.
+    trap_handler: BBId,
 }
 
 impl BBB {
@@ -89,6 +93,7 @@ impl BBB {
             blocks: vec![vec![]],
             current: 0,
             breakpoint: BB_RETURN,
+            trap_handler: BB_RETURN,
         }
     }
 
@@ -154,6 +159,10 @@ fn statement_to_ir(statement: Statement, bbb: &mut BBB) {
         _Statement::Break(exp) => {
             exp_to_ir(exp, bbb);
             bbb.append(Jump(bbb.breakpoint));
+        }
+        _Statement::Throw(exp) => {
+            exp_to_ir(exp, bbb);
+            bbb.append(Throw(bbb.trap_handler));
         }
         _Statement::Assign(de_bruijn, rhs) => {
             exp_to_ir(rhs, bbb);
@@ -221,6 +230,35 @@ fn exp_to_ir(exp: Expression, bbb: &mut BBB) {
 
             bbb.set_active_block(bb_cont);
             bbb.breakpoint = prev_breakpoint;
+        }
+        _Expression::Try(try_block, pattern_id, catch_block, finally_block) => {
+            let bb_try = bbb.new_block();
+            let bb_catch = bbb.new_block();
+            let bb_finally = bbb.new_block();
+            let bb_cont = bbb.new_block();
+
+            bbb.append(Jump(bb_try));
+            let prev_trap_handler = bbb.trap_handler;
+            bbb.trap_handler = bb_catch;
+            bbb.set_active_block(bb_try);
+            block_to_ir(try_block, bb_finally, bbb);
+            bbb.trap_handler = prev_trap_handler;
+
+            bbb.set_active_block(bb_catch);
+            bbb.append(Write { src: Addr::reg(0), dst: Addr::env(pattern_id) });
+            block_to_ir(catch_block, bb_finally, bbb);
+
+            bbb.set_active_block(bb_finally);
+            if finally_block.len() > 0 {
+                block_to_ir(finally_block, bb_cont, bbb);
+            } else {
+                bbb.append(Jump(bb_cont));
+            }
+
+            bbb.set_active_block(bb_cont);
+        }
+        _Expression::Thrown => {
+            // no-op, thrown value is already in register 0, where the trap handling expects it
         }
     }
 }
@@ -373,6 +411,15 @@ impl Computation for Closure {
                     if *block == BB_RETURN {
                         // register 0 holds the evaluation result of the previously executed statement
                         return Ok(Addr::reg(0).load(&state, &self.env));
+                    } else {
+                        state.pc = (*block, 0);
+                    }
+                }
+
+                Throw(block) => {
+                    if *block == BB_RETURN {
+                        // register 0 holds the evaluation result of the previously executed statement
+                        return Err((Addr::reg(0).load(&state, &self.env), DbgTrace));
                     } else {
                         state.pc = (*block, 0);
                     }
