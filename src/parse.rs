@@ -70,6 +70,8 @@ named!(lor(Span) -> (), do_parse!(tag!("||") >> ws0 >> (())));
 named!(blank(Span) -> (), do_parse!(tag!("_") >> ws0 >> (())));
 named!(assign(Span) -> (), do_parse!(tag!("=") >> ws0 >> (())));
 named!(qm(Span) -> (), do_parse!(tag!("?") >> ws0 >> (())));
+named!(comma(Span) -> (), do_parse!(tag!(",") >> ws0 >> (())));
+named!(coloncolon(Span) -> (), do_parse!(tag!("::") >> ws0 >> (())));
 
 fn is_id_char(c: char) -> bool {
     return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c == '_');
@@ -195,27 +197,53 @@ named!(exp_blocky(Span) -> Expression, alt!(
 ));
 
 // 1300 is the precedence level
-// `::`
-// named!(exp_binop_1300(Span) -> Expression, non_leftrecursive_exp);
+// `field access`
 named!(exp_binop_1300(Span) -> Expression, do_parse!(expr: non_leftrecursive_exp >> (expr)));
 
 // 1200 is the precedence level
-// `field access`
-named!(exp_binop_1200(Span) -> Expression, do_parse!(expr: exp_binop_1300 >> (expr)));
+// `call, index`
+named!(exp_binop_1200(Span) -> Expression, do_parse!(
+    pos: position!() >>
+    first: exp_binop_1300 >>
+    fold: fold_many0!(
+        delimited!(
+            lparen,
+            separated_list!(comma, exp),
+            rparen
+        ),
+        first,
+        |acc, args| Expression(pos, _Expression::Invocation(Box::new(acc), args))
+    ) >>
+    (fold)
+));
 
 // 1100 is the precedence level
-// `call, index`
-named!(exp_binop_1100(Span) -> Expression, do_parse!(expr: exp_binop_1200 >> (expr)));
+// `::`
+named!(exp_binop_1100(Span) -> Expression, do_parse!(
+    pos: position!() >>
+    first: exp_binop_1200 >>
+    fold: fold_many0!(
+        do_parse!(
+            coloncolon >>
+            ident: id >>
+            args: delimited!(
+                lparen,
+                separated_list!(comma, exp),
+                rparen
+            ) >>
+            ((ident, args))
+        ),
+        first,
+        |acc, (ident, args)| Expression(pos, _Expression::Method(Box::new(acc), ident, args))
+    ) >>
+    (fold)
+));
 
 // 1000 is the precedence level
-// `-, !` (unary)
-named!(exp_binop_1000(Span) -> Expression, do_parse!(expr: exp_binop_1100 >> (expr)));
-
-// 900 is the precedence level
 // `?`
-named!(exp_binop_900(Span) -> Expression, do_parse!(
+named!(exp_binop_1000(Span) -> Expression, do_parse!(
     pos: position!() >>
-    first: exp_binop_1000 >>
+    first: exp_binop_1100 >>
     fold: fold_many0!(
         do_parse!(
             qm >>
@@ -226,6 +254,10 @@ named!(exp_binop_900(Span) -> Expression, do_parse!(
     ) >>
     (fold)
 ));
+
+// 900 is the precedence level
+// `-, !` (unary)
+named!(exp_binop_900(Span) -> Expression, do_parse!(expr: exp_binop_1000 >> (expr)));
 
 // 800 is the precedence level
 // `*, /, %`

@@ -42,18 +42,25 @@ impl Addr {
 /// A single instruction of the ir.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Instruction {
-    /// Do nothing but evaluate to the given value and store it in the given location.
-    Literal(Value, Addr),
+    /// Push the value to the stack.
+    Literal(Value),
     /// Jump to the given basic block. If the usize is `BB_RETURN`, return from the function instead.
     Jump(BBId),
-    /// Jump to the given basic block. If the usize is `BB_RETURN`, throw from the function instead.
-    Throw(BBId),
     /// Jump to the first basic block if the value at the Addr is truthy, else to the second one.
     CondJump(Addr, BBId, BBId),
+    /// Jump to the current catch handler basic block. If the bb is `BB_RETURN`, the function throws.
+    Throw,
+    /// Set the catch hander basic block.
+    SetCatchHandler(BBId),
     /// Push the value at the Addr to the stack.
     Push(Addr),
     /// Pop the stack and write the value to the Addr.
     Pop(Addr),
+    /// Invoke the topmost value with the next `usize` many arguments. Remove them from the stack
+    /// afterwards. If the bool is true, push the result onto the stack.
+    ///
+    /// The args need to be passed to the function in fifo order, *not* lifo.
+    Call(usize, bool),
 }
 use Instruction::*;
 
@@ -103,7 +110,7 @@ impl BBB {
     }
 
     fn push_nil(&mut self) {
-        self.append(Literal(Value::new_nil(), Addr::Stack))
+        self.append(Literal(Value::new_nil()))
     }
 
     // Consume the builder to create an IrChunk.
@@ -156,7 +163,7 @@ fn statement_to_ir(statement: Statement, push: bool, bbb: &mut BBB) {
         }
         _Statement::Throw(exp) => {
             exp_to_ir(exp, true, bbb);
-            bbb.append(Throw(bbb.trap_handler));
+            bbb.append(Throw);
         }
         _Statement::Assign(de_bruijn, rhs) => {
             exp_to_ir(rhs, true, bbb);
@@ -178,7 +185,7 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
         }
         _Expression::Bool(b) => {
             if push {
-                bbb.append(Literal(Value::new_bool(b), Addr::Stack));
+                bbb.append(Literal(Value::new_bool(b)));
             }
         }
         _Expression::Id(id) => {
@@ -239,15 +246,19 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
 
             bbb.append(Jump(bb_try));
             let prev_trap_handler = bbb.trap_handler;
-            bbb.trap_handler = bb_catch;
             bbb.set_active_block(bb_try);
+            bbb.trap_handler = bb_catch;
+            bbb.append(SetCatchHandler(bbb.trap_handler));
             block_to_ir(try_block, bb_finally, push, bbb);
-            bbb.trap_handler = prev_trap_handler;
 
             bbb.set_active_block(bb_catch);
+            bbb.trap_handler = prev_trap_handler;
+            bbb.append(SetCatchHandler(bbb.trap_handler));
             block_to_ir(catch_block, bb_finally, push, bbb);
 
             bbb.set_active_block(bb_finally);
+            bbb.trap_handler = prev_trap_handler;
+            bbb.append(SetCatchHandler(bbb.trap_handler));
             if finally_block.len() > 0 {
                 block_to_ir(finally_block, bb_cont, push, bbb);
             } else {
@@ -258,6 +269,16 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
         }
         _Expression::Thrown => {
             // no-op, thrown value is already on top of the stack
+        }
+        _Expression::Invocation(fun, args) => {
+            let num_args = args.len();
+
+            for arg in args.into_iter() {
+                exp_to_ir(arg, true, bbb);
+            }
+
+            exp_to_ir(*fun, true, bbb);
+            bbb.append(Call(num_args, true));
         }
     }
 }
@@ -276,6 +297,9 @@ struct LocalState {
     pc: (BBId, usize),
     // Temporary storage slots for `Value`s.
     stack: Vec<Value>,
+    // Where to resume execution after something throws. If this is `BB_RETURN`, the function
+    // itself throws rather than resuming execution.
+    catch_handler: BBId,
 }
 
 impl LocalState {
@@ -284,7 +308,22 @@ impl LocalState {
         LocalState {
             pc: (0, 0),
             stack: vec![],
+            catch_handler: BB_RETURN,
         }
+    }
+
+    fn push(&mut self, val: Value) {
+        self.stack.push(val);
+    }
+
+    fn pop(&mut self) -> Value {
+        self.stack.pop().unwrap()
+    }
+
+    // Moves the topmost `num` args from the stack returns an iterator over them in fifo order.
+    fn retrieve_args(&mut self, num: usize) -> Vec<Value> {
+        let start = self.stack.len() - num;
+        self.stack.drain(start..).collect()
     }
 }
 
@@ -393,25 +432,17 @@ impl Computation for Closure {
     //
     // Since at this point we only implement the case of running a full pavo file, there is no
     // notion of arguments and we can fully ignore them.
-    fn compute<Args: IntoIterator<Item = Value>>(&self, _: Args, _: &mut Context) -> PavoResult {
+    fn compute<Args: IntoIterator<Item = Value>>(&self, _: Args, ctx: &mut Context) -> PavoResult {
         let mut state = LocalState::new(&self.fun);
 
         loop {
             state.pc.1 += 1;
             match &self.fun.basic_blocks[state.pc.0][state.pc.1 - 1] {
-                Literal(val, dst) => dst.store(val.clone(), &mut state, &self.env),
+                Literal(val) => state.push(val.clone()),
 
                 Jump(block) => {
                     if *block == BB_RETURN {
-                        return Ok(Addr::Stack.load(&mut state, &self.env));
-                    } else {
-                        state.pc = (*block, 0);
-                    }
-                }
-
-                Throw(block) => {
-                    if *block == BB_RETURN {
-                        return Err((Addr::Stack.load(&mut state, &self.env), DbgTrace));
+                        return Ok(state.pop());
                     } else {
                         state.pc = (*block, 0);
                     }
@@ -425,9 +456,46 @@ impl Computation for Closure {
                     }
                 }
 
-                Push(addr) => Addr::Stack.store(addr.load(&mut state, &self.env), &mut state, &self.env),
+                Throw => {
+                    if state.catch_handler == BB_RETURN {
+                        return Err((state.pop(), DbgTrace));
+                    } else {
+                        state.pc = (state.catch_handler, 0);
+                    }
+                }
 
-                Pop(addr) => addr.store(Addr::Stack.load(&mut state, &self.env), &mut state, &self.env),
+                SetCatchHandler(bb) => state.catch_handler = *bb,
+
+                Push(addr) => {
+                    let val = addr.load(&mut state, &self.env);
+                    state.push(val);
+                }
+
+                Pop(addr) => {
+                    let val = state.pop();
+                    addr.store(val, &mut state, &self.env);
+                }
+
+                Call(num_args, push) => {
+                    let fun = state.pop();
+                    let args = state.retrieve_args(*num_args);
+
+                    match fun.compute(args.into_iter(), ctx) {
+                        Ok(val) => {
+                            if *push {
+                                state.push(val);
+                            }
+                        }
+                        Err(err) => {
+                            if state.catch_handler == BB_RETURN {
+                                return Err((err.0, DbgTrace));
+                            } else {
+                                state.push(err.0);
+                                state.pc = (state.catch_handler, 0);
+                            }
+                        }
+                    }
+                }
             }
         }
     }

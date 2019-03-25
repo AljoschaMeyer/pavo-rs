@@ -31,6 +31,8 @@ pub enum _Expression<'a> {
     While(Box<Expression<'a>>, Vec<Statement<'a>>),
     Try(Vec<Statement<'a>>, BinderPattern<'a>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     QM(Box<Expression<'a>>),
+    Invocation(Box<Expression<'a>>, Vec<Expression<'a>>),
+    Method(Box<Expression<'a>>, Id<'a>, Vec<Expression<'a>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -2,6 +2,8 @@
 
 use gc_derive::{Trace, Finalize};
 
+use crate::context::{Computation, Context, PavoResult, DbgTrace};
+
 // Runtime representation of an arbitrary pavo value.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Trace, Finalize)]
 enum _Value {
@@ -55,5 +57,13 @@ impl Default for Value {
     /// Return a value representing `nil`.
     fn default() -> Self {
         Value(_Value::default())
+    }
+}
+
+impl Computation for Value {
+    fn compute<Args: IntoIterator<Item = Value>>(&self, _: Args, _: &mut Context) -> PavoResult {
+        match self.0 {
+            _ => Err((Value::new_nil(), DbgTrace))
+        }
     }
 }

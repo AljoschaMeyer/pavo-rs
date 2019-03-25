@@ -186,11 +186,21 @@ try {
 
 All operators in pavo are left-associative. The list of operator precendeces, from higher to lower precedence:
 
+- function invocation (`fun(args)`)
+- "method" syntax (`arg1::fun_id(args)`)
 - `?`
 - `&&`
 - `||`
 
 For example, `a || b && c` is parsed as `a || (b && c)` (`&&` has higher precedence than `||`), whereas `a || b || c` is parsed as `(a || b) || c` (equal precedence, so it defaults to left-associativity).
+
+##### Function Invocation
+
+An expression followed by an opening paren, followed by any number of expressions, followed by a closing paren is a function invocation. First, the arguments are evaluated from left to right (independent of the OS locale), then the function expression itself is evaluated, and then the arguments are applied to the function.
+
+##### "Method" Syntax
+
+`exp::some_id(args)` is equivalent to `some_id(exp, args)`.
 
 ##### `?` (Questionmark Operator)
 

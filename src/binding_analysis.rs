@@ -168,6 +168,7 @@ pub enum _Expression<'a> {
     While(Box<Expression<'a>>, Vec<Statement<'a>>),
     Try(Vec<Statement<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     Thrown,
+    Invocation(Box<Expression<'a>>, Vec<Expression<'a>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -256,6 +257,12 @@ fn do_analyze_exp<'a>(exp: LightExpression<'a>, s: &mut Stack) -> Result<Express
             )))
         }
         _LightExpression::Thrown => Ok(Expression(exp.0, _Expression::Thrown)),
+        _LightExpression::Invocation(fun, args) => {
+            Ok(Expression(exp.0, _Expression::Invocation(
+                do_analyze_exp_box(fun, s)?,
+                do_analyze_exps(args, s)?
+            )))
+        }
     }
 }
 
@@ -263,5 +270,12 @@ fn do_analyze_exp_box<'a>(exp: Box<LightExpression<'a>>, s: &mut Stack) -> Resul
     Ok(Box::new(do_analyze_exp(*exp, s)?))
 }
 
-// If(Box<Expression<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
-// While(Box<Expression<'a>>, Vec<Statement<'a>>),
+fn do_analyze_exps<'a>(exps: Vec<LightExpression<'a>>, s: &mut Stack) -> Result<Vec<Expression<'a>>, AnalysisError> {
+    let mut ret = Vec::with_capacity(exps.len());
+
+    for exp in exps.into_iter() {
+        ret.push(do_analyze_exp(exp, s)?);
+    }
+
+    return Ok(ret);
+}

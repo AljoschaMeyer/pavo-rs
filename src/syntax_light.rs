@@ -30,6 +30,7 @@ pub enum _Expression<'a> {
     While(Box<Expression<'a>>, Vec<Statement<'a>>),
     Try(Vec<Statement<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     Thrown, // Evaluates to the last value that has been thrown - has no counterpart in real pavo
+    Invocation(Box<Expression<'a>>, Vec<Expression<'a>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -147,6 +148,16 @@ impl<'a> From<PavoExpression<'a>> for Expression<'a> {
                 vec![PavoStatement::exp(PavoExpression::nil())],
                 vec![]
             )).1,
+            _PavoExpression::Invocation(fun, args) => _Expression::Invocation(
+                fun.into(),
+                args.into_iter().map(Into::into).collect()
+            ),
+            _PavoExpression::Method(first_arg, fun_id, remaining_args) => _Expression::Invocation(
+                Box::new(Expression::id(fun_id)),
+                std::iter::once((*first_arg).into())
+                    .chain(remaining_args.into_iter().map(Into::into))
+                    .collect()
+            ),
         })
     }
 }

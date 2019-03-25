@@ -214,4 +214,16 @@ mod tests {
         assert_pavo_ok("true???", Value::new_bool(true));
         assert_pavo_ok("false???; true", Value::new_bool(true));
     }
+
+    #[test]
+    fn test_invocation() {
+        assert_pavo_thrown("false(true, nil, false)", Value::new_nil());
+        assert_pavo_thrown("false()", Value::new_nil());
+    }
+
+    #[test]
+    fn test_method() {
+        assert_pavo_thrown("let x = false; true::x(nil, true)", Value::new_nil());
+        assert_pavo_thrown("let x = false; true::x()", Value::new_nil());
+    }
 }
