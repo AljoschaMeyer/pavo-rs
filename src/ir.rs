@@ -24,27 +24,16 @@ pub struct IrChunk {
     basic_blocks: Vec<Vec<Instruction>>,
 }
 
-type RegisterId = usize;
 type BBId = usize;
 
 // Addresses a storage slot where a computation can write `Value`s to (or from where to read them).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Addr {
-    // Address of a register in a `LocalState`.
-    //
-    // Register 0 is used for passing data from one statement to the next.
-    // Register 1 is used by while loops to return the correct value.
-    // Additional registers are used when multiple values need to be kept in memory simutaneously,
-    // e.g. all the arguments that are passed to a function call.
-    Register(RegisterId),
+    Stack,
     Environment(DeBruijn),
 }
 
 impl Addr {
-    fn reg(r: RegisterId) -> Addr {
-        Addr::Register(r)
-    }
-
     fn env(id: DeBruijn) -> Addr {
         Addr::Environment(id)
     }
@@ -61,10 +50,10 @@ enum Instruction {
     Throw(BBId),
     /// Jump to the first basic block if the value at the Addr is truthy, else to the second one.
     CondJump(Addr, BBId, BBId),
-    /// Write the value at Addr `src` to the Addr `dst`.
-    Write { src: Addr, dst: Addr },
-    /// Swap the values in the given Addrs.
-    Swap(Addr, Addr),
+    /// Push the value at the Addr to the stack.
+    Push(Addr),
+    /// Pop the stack and write the value to the Addr.
+    Pop(Addr),
 }
 use Instruction::*;
 
@@ -113,9 +102,8 @@ impl BBB {
         self.blocks[self.current].push(inst);
     }
 
-    // Set register 0 to `nil`.
-    fn eval_to_nil(&mut self) {
-        self.append(Literal(Value::new_nil(), Addr::reg(0)))
+    fn push_nil(&mut self) {
+        self.append(Literal(Value::new_nil(), Addr::Stack))
     }
 
     // Consume the builder to create an IrChunk.
@@ -129,75 +117,89 @@ impl BBB {
 /// Converts an abstract syntax tree into an `IrChunk`.
 pub fn ast_to_ir(ast: Vec<Statement>) -> IrChunk {
     let mut bbb = BBB::new();
-    block_to_ir(ast, BB_RETURN, &mut bbb);
+    block_to_ir(ast, BB_RETURN, true, &mut bbb);
     return bbb.into_ir();
 }
 
 // Convert a sequence of statements into instructions and basic blocks, using the given BBB.
 // As the last instruction, jump to the basic block `jump_to`.
-fn block_to_ir(block: Vec<Statement>, jump_to: BBId, bbb: &mut BBB) {
+fn block_to_ir(block: Vec<Statement>, jump_to: BBId, push: bool, bbb: &mut BBB) {
     let len = block.len();
-    for statement in block.into_iter() {
-        statement_to_ir(statement, bbb);
-    }
-
     if len == 0 {
-        bbb.eval_to_nil();
+        if push {
+            bbb.push_nil();
+        }
+    } else {
+        for (i, statement) in block.into_iter().enumerate() {
+            if i + 1 < len {
+                statement_to_ir(statement, false, bbb);
+            } else {
+                statement_to_ir(statement, push, bbb);
+            }
+        }
     }
 
     bbb.append(Jump(jump_to));
 }
 
 // Convert a single statement into instructions and basic blocks, using the given BBB..
-fn statement_to_ir(statement: Statement, bbb: &mut BBB) {
+fn statement_to_ir(statement: Statement, push: bool, bbb: &mut BBB) {
     match statement.1 {
-        _Statement::Expression(exp) => exp_to_ir(exp, bbb),
+        _Statement::Expression(exp) => exp_to_ir(exp, push, bbb),
         _Statement::Return(exp) => {
-            exp_to_ir(exp, bbb);
+            exp_to_ir(exp, true, bbb);
             bbb.append(Jump(BB_RETURN));
         }
         _Statement::Break(exp) => {
-            exp_to_ir(exp, bbb);
+            exp_to_ir(exp, true, bbb);
             bbb.append(Jump(bbb.breakpoint));
         }
         _Statement::Throw(exp) => {
-            exp_to_ir(exp, bbb);
+            exp_to_ir(exp, true, bbb);
             bbb.append(Throw(bbb.trap_handler));
         }
         _Statement::Assign(de_bruijn, rhs) => {
-            exp_to_ir(rhs, bbb);
-            bbb.append(Write { src: Addr::reg(0), dst: Addr::env(de_bruijn) });
-            bbb.eval_to_nil();
+            exp_to_ir(rhs, true, bbb);
+            bbb.append(Pop(Addr::env(de_bruijn)));
+            if push {
+                bbb.push_nil();
+            }
         }
     }
 }
 
 // Convert a single expression into instructions and basic blocks, using the given BBB..
-fn exp_to_ir(exp: Expression, bbb: &mut BBB) {
+fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
     match exp.1 {
         _Expression::Nil => {
-            bbb.append(Literal(Value::new_nil(), Addr::reg(0)));
+            if push {
+                bbb.push_nil();
+            }
         }
         _Expression::Bool(b) => {
-            bbb.append(Literal(Value::new_bool(b), Addr::reg(0)));
+            if push {
+                bbb.append(Literal(Value::new_bool(b), Addr::Stack));
+            }
         }
         _Expression::Id(id) => {
-            bbb.append(Write {src: Addr::env(id), dst: Addr::reg(0)});
+            if push {
+                bbb.append(Push(Addr::env(id)));
+            }
         },
         _Expression::If(cond, then_block, else_block) => {
-            exp_to_ir(*cond, bbb);
+            exp_to_ir(*cond, true, bbb);
 
             let bb_then = bbb.new_block();
             let bb_else = bbb.new_block();
             let bb_cont = bbb.new_block();
 
-            bbb.append(CondJump(Addr::reg(0), bb_then, bb_else));
+            bbb.append(CondJump(Addr::Stack, bb_then, bb_else));
 
             bbb.set_active_block(bb_then);
-            block_to_ir(then_block, bb_cont, bbb);
+            block_to_ir(then_block, bb_cont, push, bbb);
 
             bbb.set_active_block(bb_else);
-            block_to_ir(else_block, bb_cont, bbb);
+            block_to_ir(else_block, bb_cont, push, bbb);
 
             bbb.set_active_block(bb_cont);
         }
@@ -208,30 +210,28 @@ fn exp_to_ir(exp: Expression, bbb: &mut BBB) {
 
             // Pretend there was a previous loop iteration that evaluated to `nil`, so that we
             // evaluate to `nil` if the condition evaluates falsey at the first attempt.
-            bbb.append(Literal(Value::new_nil(), Addr::reg(0)));
+            if push {
+                bbb.push_nil();
+            }
             // Evaluate the condition for the first time.
             bbb.append(Jump(bb_cond));
 
             // The block for evaluating the condition. It also ensures that we evaluate to the
             // correct value.
             bbb.set_active_block(bb_cond);
-            // When entering here, register 0 holds the result of the previous loop body execution.
-            // We save it to register 1 before evaluating the condition, and restore it afterwards.
-            bbb.append(Write { src: Addr::reg(0), dst: Addr::reg(1)});
-            exp_to_ir(*cond, bbb);
-            bbb.append(Swap(Addr::reg(1), Addr::reg(0)));
-            bbb.append(CondJump(Addr::reg(1), bb_loop, bb_cont));
+            exp_to_ir(*cond, true, bbb);
+            bbb.append(CondJump(Addr::Stack, bb_loop, bb_cont));
 
             // The loop body, we save the old breakpoint and set the new one.
             let prev_breakpoint = bbb.breakpoint;
             bbb.breakpoint = bb_cont;
             bbb.set_active_block(bb_loop);
-            block_to_ir(loop_block, bb_cond, bbb);
+            block_to_ir(loop_block, bb_cond, push, bbb);
 
             bbb.set_active_block(bb_cont);
             bbb.breakpoint = prev_breakpoint;
         }
-        _Expression::Try(try_block, pattern_id, catch_block, finally_block) => {
+        _Expression::Try(try_block, catch_block, finally_block) => {
             let bb_try = bbb.new_block();
             let bb_catch = bbb.new_block();
             let bb_finally = bbb.new_block();
@@ -241,16 +241,15 @@ fn exp_to_ir(exp: Expression, bbb: &mut BBB) {
             let prev_trap_handler = bbb.trap_handler;
             bbb.trap_handler = bb_catch;
             bbb.set_active_block(bb_try);
-            block_to_ir(try_block, bb_finally, bbb);
+            block_to_ir(try_block, bb_finally, push, bbb);
             bbb.trap_handler = prev_trap_handler;
 
             bbb.set_active_block(bb_catch);
-            bbb.append(Write { src: Addr::reg(0), dst: Addr::env(pattern_id) });
-            block_to_ir(catch_block, bb_finally, bbb);
+            block_to_ir(catch_block, bb_finally, push, bbb);
 
             bbb.set_active_block(bb_finally);
             if finally_block.len() > 0 {
-                block_to_ir(finally_block, bb_cont, bbb);
+                block_to_ir(finally_block, bb_cont, push, bbb);
             } else {
                 bbb.append(Jump(bb_cont));
             }
@@ -258,7 +257,7 @@ fn exp_to_ir(exp: Expression, bbb: &mut BBB) {
             bbb.set_active_block(bb_cont);
         }
         _Expression::Thrown => {
-            // no-op, thrown value is already in register 0, where the trap handling expects it
+            // no-op, thrown value is already on top of the stack
         }
     }
 }
@@ -276,7 +275,7 @@ struct LocalState {
     // First usize is the basic block, second one the offset in the basic block.
     pc: (BBId, usize),
     // Temporary storage slots for `Value`s.
-    registers: Vec<Value>,
+    stack: Vec<Value>,
 }
 
 impl LocalState {
@@ -284,7 +283,7 @@ impl LocalState {
     fn new(_chunk: &IrChunk) -> LocalState {
         LocalState {
             pc: (0, 0),
-            registers: vec![Value::default(), Value::default()], // first two registers are special
+            stack: vec![],
         }
     }
 }
@@ -368,9 +367,9 @@ fn top_level() -> Gc<GcCell<Environment>> {
 
 impl Addr {
     // Use an `Addr` to retrieve a value. This can not fail, unless we created erroneous ir code.
-    fn load(self, local: &LocalState, env: &Gc<GcCell<Environment>>) -> Value {
+    fn load(self, local: &mut LocalState, env: &Gc<GcCell<Environment>>) -> Value {
         match self {
-            Addr::Register(index) => local.registers[index].clone(),
+            Addr::Stack => local.stack.pop().unwrap(),
             Addr::Environment(de_bruijn) => env.borrow().get(de_bruijn),
         }
     }
@@ -378,12 +377,7 @@ impl Addr {
     // Use an `Addr` to store a value. This can not fail, unless we created erroneous vm code.
     fn store(self, val: Value, local: &mut LocalState, env: &Gc<GcCell<Environment>>) {
         match self {
-            Addr::Register(index) => {
-                if index >= local.registers.len()  {
-                    local.registers.resize_with(index + 1, Default::default);
-                }
-                local.registers[index] = val;
-            }
+            Addr::Stack => local.stack.push(val),
             Addr::Environment(de_bruijn) => env.borrow_mut().set(de_bruijn, val),
         }
     }
@@ -409,8 +403,7 @@ impl Computation for Closure {
 
                 Jump(block) => {
                     if *block == BB_RETURN {
-                        // register 0 holds the evaluation result of the previously executed statement
-                        return Ok(Addr::reg(0).load(&state, &self.env));
+                        return Ok(Addr::Stack.load(&mut state, &self.env));
                     } else {
                         state.pc = (*block, 0);
                     }
@@ -418,29 +411,23 @@ impl Computation for Closure {
 
                 Throw(block) => {
                     if *block == BB_RETURN {
-                        // register 0 holds the evaluation result of the previously executed statement
-                        return Err((Addr::reg(0).load(&state, &self.env), DbgTrace));
+                        return Err((Addr::Stack.load(&mut state, &self.env), DbgTrace));
                     } else {
                         state.pc = (*block, 0);
                     }
                 }
 
                 CondJump(cond, then_block, else_block) => {
-                    if cond.load(&state, &self.env).truthy() {
+                    if cond.load(&mut state, &self.env).truthy() {
                         state.pc = (*then_block, 0);
                     } else {
                         state.pc = (*else_block, 0);
                     }
                 }
 
-                Write { src, dst } => dst.store(src.load(&state, &self.env), &mut state, &self.env),
+                Push(addr) => Addr::Stack.store(addr.load(&mut state, &self.env), &mut state, &self.env),
 
-                Swap(a, b) => {
-                    let val_a = a.load(&state, &self.env);
-                    let val_b = b.load(&state, &self.env);
-                    a.store(val_b, &mut state, &self.env);
-                    b.store(val_a, &mut state, &self.env);
-                }
+                Pop(addr) => addr.store(Addr::Stack.load(&mut state, &self.env), &mut state, &self.env),
             }
         }
     }

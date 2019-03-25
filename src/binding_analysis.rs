@@ -166,7 +166,7 @@ pub enum _Expression<'a> {
     Id(DeBruijn),
     If(Box<Expression<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     While(Box<Expression<'a>>, Vec<Statement<'a>>),
-    Try(Vec<Statement<'a>>, DeBruijn, Vec<Statement<'a>>, Vec<Statement<'a>>),
+    Try(Vec<Statement<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     Thrown,
 }
 
@@ -247,12 +247,10 @@ fn do_analyze_exp<'a>(exp: LightExpression<'a>, s: &mut Stack) -> Result<Express
                 do_analyze_statements(body, s)?
             )))
         }
-        _LightExpression::Try(try_block, id, caught_block, finally_block) => {
+        _LightExpression::Try(try_block, caught_block, finally_block) => {
             let ret_try_block = do_analyze_statements(try_block, s)?;
-            s.add_binding(id.0.fragment.0, false);
             Ok(Expression(exp.0, _Expression::Try(
                 ret_try_block,
-                s.resolve_binding(&id, false).unwrap(),
                 do_analyze_statements(caught_block, s)?,
                 do_analyze_statements(finally_block, s)?
             )))

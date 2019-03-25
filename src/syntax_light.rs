@@ -28,7 +28,7 @@ pub enum _Expression<'a> {
     Id(Id<'a>),
     If(Box<Expression<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     While(Box<Expression<'a>>, Vec<Statement<'a>>),
-    Try(Vec<Statement<'a>>, Id<'a>, Vec<Statement<'a>>, Vec<Statement<'a>>),
+    Try(Vec<Statement<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     Thrown, // Evaluates to the last value that has been thrown - has no counterpart in real pavo
 }
 
@@ -137,7 +137,6 @@ impl<'a> From<PavoExpression<'a>> for Expression<'a> {
                 do_desugar_statements(caught_block, &mut caught_buf);
                 _Expression::Try(
                     desugar_statements(try_block),
-                    Id::new(PAT),
                     caught_buf,
                     desugar_statements(finally_block)
                 )
