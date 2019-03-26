@@ -76,7 +76,7 @@ mod tests {
         match execute_pavo(src) {
             Err(err) => panic!("Unexpected parser error: {:?}", err),
             Ok(Ok(val)) => panic!("Expected to throw, but returned: {:?}", val),
-            Ok(Err((thrown, _))) => assert_eq!(thrown, expected),
+            Ok(Err(thrown)) => assert_eq!(thrown, expected),
         }
     }
 

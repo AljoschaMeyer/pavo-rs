@@ -2,7 +2,7 @@
 
 use gc_derive::{Trace, Finalize};
 
-use crate::context::{Computation, Context, PavoResult, DbgTrace};
+use crate::context::{Computation, Context, PavoResult};
 
 // Runtime representation of an arbitrary pavo value.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Trace, Finalize)]
@@ -74,7 +74,7 @@ impl Computation for Value {
             //     let mut iter = args.into_iter().chain(std::iter::repeat(Value::new_nil())).take(2);
             //     return the_fun(iter.next().unwrap(), iter.next().unwrap());
             // }
-            _ => Err((Value::new_nil(), DbgTrace))
+            _ => Err(Value::new_nil()), // TODO type error
         }
     }
 }

@@ -14,7 +14,7 @@ use gc_derive::{Trace, Finalize};
 use crate::{
     binding_analysis::{Statement, _Statement, Expression, _Expression, DeBruijn},
     value::Value,
-    context::{Computation, Context, PavoResult, DbgTrace},
+    context::{Computation, Context, PavoResult},
 };
 
 /// A control flow graph of basic blocks, each consisting of a sequence of statements.
@@ -457,7 +457,7 @@ impl Computation for Closure {
 
                 Throw => {
                     if state.catch_handler == BB_RETURN {
-                        return Err((state.pop(), DbgTrace));
+                        return Err(state.pop());
                     } else {
                         state.pc = (state.catch_handler, 0);
                     }
@@ -489,9 +489,9 @@ impl Computation for Closure {
                         Err(err) => {
                             state.pop_n(*num_args);
                             if state.catch_handler == BB_RETURN {
-                                return Err((err.0, DbgTrace));
+                                return Err(err);
                             } else {
-                                state.push(err.0);
+                                state.push(err);
                                 state.pc = (state.catch_handler, 0);
                             }
                         }
