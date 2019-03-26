@@ -50,7 +50,7 @@ pub fn execute_pavo<'s>(src: &'s str) -> Result<PavoResult, StaticError> {
     let main = ir::Closure::from_script_chunk(ir_chunk);
 
     let mut cx = Context::new();
-    return Ok(main.compute(vec![], &mut cx));
+    return Ok(main.compute(&vec![], &mut cx));
 }
 
 // TODO XXX This is temporary...

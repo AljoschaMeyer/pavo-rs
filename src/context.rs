@@ -31,5 +31,5 @@ pub trait Computation {
     /// `self` is the static representation of the computation that is executed.
     /// `args` are the input values to the computation.
     /// `cx` is the `Context` in which the computation happens.
-    fn compute<Args: IntoIterator<Item = Value>>(&self, _: Args, cx: &mut Context) -> PavoResult;
+    fn compute(&self, args: &[Value], cx: &mut Context) -> PavoResult;
 }

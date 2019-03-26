@@ -320,10 +320,14 @@ impl LocalState {
         self.stack.pop().unwrap()
     }
 
-    // Moves the topmost `num` args from the stack returns an iterator over them in fifo order.
-    fn retrieve_args(&mut self, num: usize) -> Vec<Value> {
+    fn args(&mut self, num: usize) -> &[Value] {
         let start = self.stack.len() - num;
-        self.stack.drain(start..).collect()
+        &self.stack[start..]
+    }
+
+    fn pop_n(&mut self, num: usize) {
+        let new_len = self.stack.len() - num;
+        self.stack.truncate(new_len);
     }
 }
 
@@ -422,17 +426,12 @@ impl Addr {
     }
 }
 
-// An IrChunk encodes a pavo computation, so it can implement the `Computation` trait.
-//
-// We will remove this impl at a later point: Once we implement value bindings (aka variables),
-// we need an environment for computation. An IrChunk only stores the raw code, but not the
-// corresponding environment (it's a function, not a closure).
 impl Computation for Closure {
     // To perform the computation, interpret the instructions of the chunk.
     //
     // Since at this point we only implement the case of running a full pavo file, there is no
     // notion of arguments and we can fully ignore them.
-    fn compute<Args: IntoIterator<Item = Value>>(&self, _: Args, ctx: &mut Context) -> PavoResult {
+    fn compute(&self, _: &[Value], ctx: &mut Context) -> PavoResult {
         let mut state = LocalState::new(&self.fun);
 
         loop {
@@ -478,15 +477,17 @@ impl Computation for Closure {
 
                 Call(num_args, push) => {
                     let fun = state.pop();
-                    let args = state.retrieve_args(*num_args);
+                    let args = state.args(*num_args);
 
-                    match fun.compute(args.into_iter(), ctx) {
+                    match fun.compute(args, ctx) {
                         Ok(val) => {
+                            state.pop_n(*num_args);
                             if *push {
                                 state.push(val);
                             }
                         }
                         Err(err) => {
+                            state.pop_n(*num_args);
                             if state.catch_handler == BB_RETURN {
                                 return Err((err.0, DbgTrace));
                             } else {

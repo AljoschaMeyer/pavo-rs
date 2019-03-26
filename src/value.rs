@@ -9,6 +9,7 @@ use crate::context::{Computation, Context, PavoResult, DbgTrace};
 enum _Value {
     Nil,
     Bool(bool),
+    Fun(Fun),
 }
 
 impl _Value {
@@ -60,9 +61,19 @@ impl Default for Value {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Trace, Finalize)]
+enum Fun {
+    #[unsafe_ignore_trace]
+    Builtin2(fn(Value, Value) -> PavoResult),
+}
+
 impl Computation for Value {
-    fn compute<Args: IntoIterator<Item = Value>>(&self, _: Args, _: &mut Context) -> PavoResult {
+    fn compute(&self, args: &[Value], _: &mut Context) -> PavoResult {
         match self.0 {
+            // _Value::Fun(Fun::Builtin2(the_fun)) => {
+            //     let mut iter = args.into_iter().chain(std::iter::repeat(Value::new_nil())).take(2);
+            //     return the_fun(iter.next().unwrap(), iter.next().unwrap());
+            // }
             _ => Err((Value::new_nil(), DbgTrace))
         }
     }
