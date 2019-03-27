@@ -17,6 +17,8 @@ mod context;
 // An intermediate representation of pavo code that gets interpreted.
 mod ir;
 mod util;
+mod builtins;
+mod toplevel;
 
 use binding_analysis::AnalysisError;
 use context::{Computation, Context, PavoResult};
@@ -45,17 +47,12 @@ impl From<AnalysisError> for StaticError {
 pub fn execute_pavo<'s>(src: &'s str) -> Result<PavoResult, StaticError> {
     let ast = parse::script(LocatedSpan::new(CompleteStr(src)))?;
     let desugared = syntax_light::desugar_statements(ast);
-    let analyzed = binding_analysis::analyze_statements(desugared, &mut top_level())?;
+    let analyzed = binding_analysis::analyze_statements(desugared, toplevel::BINDINGS)?;
     let ir_chunk = ir::ast_to_ir(analyzed);
     let main = ir::Closure::from_script_chunk(ir_chunk);
 
     let mut cx = Context::new();
     return Ok(main.compute(&vec![], &mut cx));
-}
-
-// TODO XXX This is temporary...
-fn top_level() -> impl Iterator<Item = String> {
-    vec![].into_iter() // TODO
 }
 
 #[cfg(test)]
@@ -225,5 +222,23 @@ mod tests {
     fn test_method() {
         assert_pavo_thrown("let x = false; true::x(nil, true)", Value::new_nil());
         assert_pavo_thrown("let x = false; true::x()", Value::new_nil());
+    }
+
+    #[test]
+    fn test_binops() {
+        assert_pavo_ok("nil == false", Value::new_bool(false));
+        assert_pavo_ok("false == false", Value::new_bool(true));
+    }
+
+    #[test]
+    fn test_builtins() {
+        assert_pavo_ok("eq(true, true)", Value::new_bool(true));
+        assert_pavo_ok("eq(eq, eq)", Value::new_bool(true));
+        assert_pavo_ok("eq(true, false)", Value::new_bool(false));
+        assert_pavo_ok("eq(eq, eq, false)", Value::new_bool(true));
+        assert_pavo_ok("eq(nil, false, false)", Value::new_bool(false));
+        assert_pavo_ok("eq(false)", Value::new_bool(false));
+        assert_pavo_ok("eq(nil)", Value::new_bool(true));
+        assert_pavo_ok("eq()", Value::new_bool(true));
     }
 }

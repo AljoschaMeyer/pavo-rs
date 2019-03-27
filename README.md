@@ -8,6 +8,7 @@ Pavo is dynamically typed. Variables bindings don't have statically known types,
 
 - `nil`: The unit type.
 - `bool`: Either `true` or `false`.
+- `function`: A function, or strictly speaking a closure.
 
 ### Nil
 
@@ -16,6 +17,20 @@ The `nil` type only holds a single value: `nil` (which is also the literal of th
 ### Bool
 
 The `bool` type holds two values: `true` and `false` (which are also the literals of the values).
+
+### Function
+
+A `function` represents a computation. The function can be applied to some arguments, and either returns a value or throws one.
+
+## Other Toplevel Functions
+
+### Equality and Ordering
+
+TODO words (blocked on: will floats include NaN?, is ordering on ref types deterministic?)
+
+#### `eq(a, b)`
+
+Returns `true` iff `a == b`.
 
 ## Syntax and Semantics
 
@@ -189,6 +204,7 @@ All operators in pavo are left-associative. The list of operator precendeces, fr
 - function invocation (`fun(args)`)
 - "method" syntax (`arg1::fun_id(args)`)
 - `?`
+- `==`
 - `&&`
 - `||`
 
@@ -213,6 +229,10 @@ try {
   nil
 }
 ```
+
+##### `==` (Equality)
+
+`a == b` evaluates to the same result as `eq(a, b)`.
 
 ##### `&&` (Logical And)
 

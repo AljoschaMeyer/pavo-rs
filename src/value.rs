@@ -2,7 +2,10 @@
 
 use gc_derive::{Trace, Finalize};
 
-use crate::context::{Computation, Context, PavoResult};
+use crate::{
+    context::{Computation, Context, PavoResult},
+    util::FnWrap as W,
+};
 
 // Runtime representation of an arbitrary pavo value.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Trace, Finalize)]
@@ -19,6 +22,10 @@ impl _Value {
 
     fn new_bool(b: bool) -> _Value {
         _Value::Bool(b)
+    }
+
+    pub fn new_builtin2(fun: W<fn(&Value, &Value, &mut Context) -> PavoResult>) -> _Value {
+        _Value::Fun(Fun::Builtin2(fun))
     }
 
     fn truthy(&self) -> bool {
@@ -48,8 +55,16 @@ impl Value {
         Value(_Value::new_bool(b))
     }
 
+    pub fn new_builtin2(fun: W<fn(&Value, &Value, &mut Context) -> PavoResult>) -> Value {
+        Value(_Value::new_builtin2(fun))
+    }
+
     pub fn truthy(&self) -> bool {
         self.0.truthy()
+    }
+
+    pub fn pavo_eq(&self, other: &Value) -> PavoResult {
+        Ok(Value::new_bool(self == other))
     }
 }
 
@@ -63,17 +78,19 @@ impl Default for Value {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Trace, Finalize)]
 enum Fun {
-    #[unsafe_ignore_trace]
-    Builtin2(fn(Value, Value) -> PavoResult),
+    Builtin2(#[unsafe_ignore_trace] W<fn(&Value, &Value, &mut Context) -> PavoResult>),
 }
 
 impl Computation for Value {
-    fn compute(&self, args: &[Value], _: &mut Context) -> PavoResult {
+    fn compute(&self, args: &[Value], cx: &mut Context) -> PavoResult {
         match self.0 {
-            // _Value::Fun(Fun::Builtin2(the_fun)) => {
-            //     let mut iter = args.into_iter().chain(std::iter::repeat(Value::new_nil())).take(2);
-            //     return the_fun(iter.next().unwrap(), iter.next().unwrap());
-            // }
+            _Value::Fun(Fun::Builtin2(fun)) => {
+                fun.0(
+                    args.get(0).unwrap_or(&Value::new_nil()),
+                    args.get(1).unwrap_or(&Value::new_nil()),
+                    cx
+                )
+            }
             _ => Err(Value::new_nil()), // TODO type error
         }
     }

@@ -15,6 +15,8 @@ use crate::{
     binding_analysis::{Statement, _Statement, Expression, _Expression, DeBruijn},
     value::Value,
     context::{Computation, Context, PavoResult},
+    util::FnWrap as W,
+    toplevel::top_level,
 };
 
 /// A control flow graph of basic blocks, each consisting of a sequence of statements.
@@ -61,6 +63,9 @@ enum Instruction {
     ///
     /// The args need to be passed to the function in fifo order, *not* lifo.
     Call(usize, bool),
+    /// Invoke the builtin function with the two topmost values (fifo). If the bool is true, push
+    /// the result onto the stack.
+    CallBuiltin2(W<fn(&Value, &Value, &mut Context) -> PavoResult>, bool)
 }
 use Instruction::*;
 
@@ -278,7 +283,12 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
             }
 
             exp_to_ir(*fun, true, bbb);
-            bbb.append(Call(num_args, true));
+            bbb.append(Call(num_args, push));
+        }
+        _Expression::Builtin2(fun, lhs, rhs) => {
+            exp_to_ir(*lhs, true, bbb);
+            exp_to_ir(*rhs, true, bbb);
+            bbb.append(CallBuiltin2(fun, push))
         }
     }
 }
@@ -289,6 +299,7 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
 
 // The local state upon which the instructions to operate. It is local to each invocation of
 // `Computation::compute`.
+#[derive(Debug)]
 struct LocalState {
     // Index into the graph of instructions that indicates which instruction to execute next.
     // "pc" stands for "program counter".
@@ -403,11 +414,6 @@ impl Closure {
     }
 }
 
-// TODO XXX This is temporary...
-fn top_level() -> Gc<GcCell<Environment>> {
-    Environment::root()
-}
-
 impl Addr {
     // Use an `Addr` to retrieve a value. This can not fail, unless we created erroneous ir code.
     fn load(self, local: &mut LocalState, env: &Gc<GcCell<Environment>>) -> Value {
@@ -488,6 +494,28 @@ impl Computation for Closure {
                         }
                         Err(err) => {
                             state.pop_n(*num_args);
+                            if state.catch_handler == BB_RETURN {
+                                return Err(err);
+                            } else {
+                                state.push(err);
+                                state.pc = (state.catch_handler, 0);
+                            }
+                        }
+                    }
+                }
+
+                CallBuiltin2(fun, push) => {
+                    let args = state.args(2);
+
+                    match fun.0(&args[0], &args[1], ctx) {
+                        Ok(val) => {
+                            state.pop_n(2);
+                            if *push {
+                                state.push(val);
+                            }
+                        }
+                        Err(err) => {
+                            state.pop_n(2);
                             if state.catch_handler == BB_RETURN {
                                 return Err(err);
                             } else {

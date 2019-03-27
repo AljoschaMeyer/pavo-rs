@@ -33,6 +33,12 @@ pub enum _Expression<'a> {
     QM(Box<Expression<'a>>),
     Invocation(Box<Expression<'a>>, Vec<Expression<'a>>),
     Method(Box<Expression<'a>>, Id<'a>, Vec<Expression<'a>>),
+    BinOp(Box<Expression<'a>>, BinOp, Box<Expression<'a>>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BinOp {
+    Eq
 }
 
 #[derive(Debug, Clone, PartialEq)]

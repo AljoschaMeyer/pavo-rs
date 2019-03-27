@@ -11,7 +11,9 @@ use crate::syntax_light::{
     Expression as LightExpression,
     _Expression as _LightExpression,
 };
-use crate::util::SrcLocation;
+use crate::util::{SrcLocation, FnWrap as W};
+use crate::value::Value;
+use crate::context::{Context, PavoResult};
 
 /// Everything that can go wrong in the static analysis.
 #[derive(PartialEq, Eq, Debug, Clone, Hash, Fail)]
@@ -50,13 +52,15 @@ impl Stack {
     // iterator as immutable binders (with BindingIds assigned in ascending order). This will do
     // unexpected things if the iterator emits some pairwise equal strings (but why would you do
     // that?).
-    fn with_toplevel<I: Iterator<Item = String>>(ids: &mut I) -> Stack {
+    fn with_toplevel(ids: &'static [&'static str]) -> Stack {
         let mut s = Stack::new();
         s.push_env();
 
         for id in ids {
             s.add_binding(&id, false);
         }
+
+        s.push_env();
 
         return s;
     }
@@ -169,6 +173,11 @@ pub enum _Expression<'a> {
     Try(Vec<Statement<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     Thrown,
     Invocation(Box<Expression<'a>>, Vec<Expression<'a>>),
+    Builtin2(
+        W<fn(&Value, &Value, &mut Context) -> PavoResult>,
+        Box<Expression<'a>>,
+        Box<Expression<'a>>
+    )
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -183,11 +192,10 @@ pub enum _Statement<'a> {
     Assign(DeBruijn, Expression<'a>),
 }
 
-pub fn analyze_statements<'a, I>(ast: Vec<LightStatement<'a>>, top_level: &mut I) -> Result<Vec<Statement<'a>>, AnalysisError> where
-    I: Iterator<Item = String> {
+pub fn analyze_statements<'a>(ast: Vec<LightStatement<'a>>, top_level: &'static [&'static str]) -> Result<Vec<Statement<'a>>, AnalysisError> {
     let mut s = Stack::with_toplevel(top_level);
     let ret = do_analyze_statements(ast, &mut s);
-    debug_assert!(s.0.len() == 1, "Mismatched number of push and pops: Too few pops");
+    debug_assert!(s.0.len() == 2, "Mismatched number of push and pops: Too few pops");
     return ret;
 }
 
@@ -261,6 +269,13 @@ fn do_analyze_exp<'a>(exp: LightExpression<'a>, s: &mut Stack) -> Result<Express
             Ok(Expression(exp.0, _Expression::Invocation(
                 do_analyze_exp_box(fun, s)?,
                 do_analyze_exps(args, s)?
+            )))
+        }
+        _LightExpression::Builtin2(fun, lhs, rhs) => {
+            Ok(Expression(exp.0, _Expression::Builtin2(
+                fun,
+                do_analyze_exp_box(lhs, s)?,
+                do_analyze_exp_box(rhs, s)?
             )))
         }
     }

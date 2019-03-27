@@ -15,7 +15,7 @@ use nom_locate::{LocatedSpan, position};
 
 use crate::syntax::{
     Id,
-    Expression, _Expression,
+    Expression, _Expression, BinOp,
     Statement, _Statement,
     BinderPattern, _BinderPattern,
 };
@@ -72,6 +72,7 @@ named!(assign(Span) -> (), do_parse!(tag!("=") >> ws0 >> (())));
 named!(qm(Span) -> (), do_parse!(tag!("?") >> ws0 >> (())));
 named!(comma(Span) -> (), do_parse!(tag!(",") >> ws0 >> (())));
 named!(coloncolon(Span) -> (), do_parse!(tag!("::") >> ws0 >> (())));
+named!(eq(Span) -> (), do_parse!(tag!("==") >> ws0 >> (())));
 
 fn is_id_char(c: char) -> bool {
     return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c == '_');
@@ -285,7 +286,22 @@ named!(exp_binop_300(Span) -> Expression, do_parse!(expr: exp_binop_400 >> (expr
 
 // 200 is the precedence level
 // `==, !=, <, <=, >, >=`
-named!(exp_binop_200(Span) -> Expression, do_parse!(expr: exp_binop_300 >> (expr)));
+named!(exp_binop_200(Span) -> Expression, do_parse!(
+    pos: position!() >>
+    first: exp_binop_300 >>
+    fold: fold_many0!(
+        do_parse!(
+            op: alt!(
+                value!(BinOp::Eq, eq)
+            ) >>
+            expr: exp_binop_300 >>
+            (op, expr)
+        ),
+        first,
+        |acc, (op, rhs)| Expression(pos, _Expression::BinOp(Box::new(acc), op, Box::new(rhs)))
+    ) >>
+    (fold)
+));
 
 // 100 is the precedence level
 // `&&`

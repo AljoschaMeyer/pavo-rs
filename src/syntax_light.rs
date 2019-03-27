@@ -12,9 +12,14 @@ use crate::syntax::{
     _Statement as _PavoStatement,
     Expression as PavoExpression,
     _Expression as _PavoExpression,
+    BinOp,
     BinderPattern,
     _BinderPattern,
 };
+use crate::builtins;
+use crate::util::FnWrap as W;
+use crate::value::Value;
+use crate::context::{Context, PavoResult};
 
 type Span<'a> = LocatedSpan<CompleteStr<'a>>;
 
@@ -31,6 +36,11 @@ pub enum _Expression<'a> {
     Try(Vec<Statement<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
     Thrown, // Evaluates to the last value that has been thrown - has no counterpart in real pavo
     Invocation(Box<Expression<'a>>, Vec<Expression<'a>>),
+    Builtin2(
+        W<fn(&Value, &Value, &mut Context) -> PavoResult>,
+        Box<Expression<'a>>,
+        Box<Expression<'a>>
+    )
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +168,20 @@ impl<'a> From<PavoExpression<'a>> for Expression<'a> {
                     .chain(remaining_args.into_iter().map(Into::into))
                     .collect()
             ),
+            _PavoExpression::BinOp(lhs, op, rhs) => match op {
+                BinOp::Eq => _Expression::Builtin2(
+                    W(builtins::eq),
+                    lhs.into(),
+                    rhs.into()
+                ),
+            }
+
+
+            // Builtin2(
+            //     W<fn(&Value, &Value, &mut Context) -> PavoResult>,
+            //     Box<Expression<'a>>,
+            //     Box<Expression<'a>>
+            // )
         })
     }
 }
