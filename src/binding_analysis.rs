@@ -177,7 +177,11 @@ pub enum _Expression<'a> {
         W<fn(&Value, &Value, &mut Context) -> PavoResult>,
         Box<Expression<'a>>,
         Box<Expression<'a>>
-    )
+    ),
+    BuiltinMany(
+        W<fn(&[Value], &mut Context) -> PavoResult>,
+        Vec<Expression<'a>>,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -276,6 +280,12 @@ fn do_analyze_exp<'a>(exp: LightExpression<'a>, s: &mut Stack) -> Result<Express
                 fun,
                 do_analyze_exp_box(lhs, s)?,
                 do_analyze_exp_box(rhs, s)?
+            )))
+        }
+        _LightExpression::BuiltinMany(fun, args) => {
+            Ok(Expression(exp.0, _Expression::BuiltinMany(
+                fun,
+                do_analyze_exps(args, s)?
             )))
         }
     }

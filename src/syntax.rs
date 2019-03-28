@@ -34,6 +34,7 @@ pub enum _Expression<'a> {
     Invocation(Box<Expression<'a>>, Vec<Expression<'a>>),
     Method(Box<Expression<'a>>, Id<'a>, Vec<Expression<'a>>),
     BinOp(Box<Expression<'a>>, BinOp, Box<Expression<'a>>),
+    Array(Vec<Expression<'a>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -19,6 +19,7 @@ mod ir;
 mod util;
 mod builtins;
 mod toplevel;
+mod gc_foreign;
 
 use binding_analysis::AnalysisError;
 use context::{Computation, Context, PavoResult};
@@ -240,5 +241,11 @@ mod tests {
         assert_pavo_ok("eq(false)", Value::new_bool(false));
         assert_pavo_ok("eq(nil)", Value::new_bool(true));
         assert_pavo_ok("eq()", Value::new_bool(true));
+    }
+
+    #[test]
+    fn test_arrays() {
+        assert_pavo_ok("[] == []", Value::new_bool(true));
+        assert_pavo_ok("[[nil], true] == [[nil], true]", Value::new_bool(true));
     }
 }

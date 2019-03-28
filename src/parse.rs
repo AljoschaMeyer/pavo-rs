@@ -63,6 +63,8 @@ macro_rules! kw(
 named!(semi(Span) -> (), do_parse!(tag!(";") >> ws0 >> (())));
 named!(lbrace(Span) -> (), do_parse!(tag!("{") >> ws0 >> (())));
 named!(rbrace(Span) -> (), do_parse!(tag!("}") >> ws0 >> (())));
+named!(lbracket(Span) -> (), do_parse!(tag!("[") >> ws0 >> (())));
+named!(rbracket(Span) -> (), do_parse!(tag!("]") >> ws0 >> (())));
 named!(lparen(Span) -> (), do_parse!(tag!("(") >> ws0 >> (())));
 named!(rparen(Span) -> (), do_parse!(tag!(")") >> ws0 >> (())));
 named!(land(Span) -> (), do_parse!(tag!("&&") >> ws0 >> (())));
@@ -195,6 +197,16 @@ named!(exp_try(Span) -> Expression, do_parse!(
 // Expressions that can follow an `else` keyword without being enclosed in braces.
 named!(exp_blocky(Span) -> Expression, alt!(
     exp_if | exp_while | exp_try
+));
+
+named!(exp_array(Span) -> Expression, do_parse!(
+    pos: position!() >>
+    arr: delimited!(
+        lbracket,
+        separated_list!(comma, exp),
+        rbracket
+    ) >>
+    (Expression(pos, _Expression::Array(arr)))
 ));
 
 // 1300 is the precedence level
@@ -332,7 +344,8 @@ named!(non_leftrecursive_exp(Span) -> Expression, alt!(
         (ex)
     ) |
     exp_atomic |
-    exp_blocky
+    exp_blocky |
+    exp_array
 ));
 
 // This is the left-recursive expression of the lowest precedence level

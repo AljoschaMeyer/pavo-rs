@@ -65,7 +65,10 @@ enum Instruction {
     Call(usize, bool),
     /// Invoke the builtin function with the two topmost values (fifo). If the bool is true, push
     /// the result onto the stack.
-    CallBuiltin2(W<fn(&Value, &Value, &mut Context) -> PavoResult>, bool)
+    CallBuiltin2(W<fn(&Value, &Value, &mut Context) -> PavoResult>, bool),
+    /// Invoke the builtin function with as many values from the stack (fifo) as specified. If the
+    /// bool is true, push the result onto the stack.
+    CallBuiltinMany(W<fn(&[Value], &mut Context) -> PavoResult>, usize, bool),
 }
 use Instruction::*;
 
@@ -289,6 +292,15 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
             exp_to_ir(*lhs, true, bbb);
             exp_to_ir(*rhs, true, bbb);
             bbb.append(CallBuiltin2(fun, push))
+        }
+        _Expression::BuiltinMany(fun, args) => {
+            let num_args = args.len();
+
+            for arg in args.into_iter() {
+                exp_to_ir(arg, true, bbb);
+            }
+
+            bbb.append(CallBuiltinMany(fun, num_args, push));
         }
     }
 }
@@ -516,6 +528,28 @@ impl Computation for Closure {
                         }
                         Err(err) => {
                             state.pop_n(2);
+                            if state.catch_handler == BB_RETURN {
+                                return Err(err);
+                            } else {
+                                state.push(err);
+                                state.pc = (state.catch_handler, 0);
+                            }
+                        }
+                    }
+                }
+
+                CallBuiltinMany(fun, num_args, push) => {
+                    let args = state.args(*num_args);
+
+                    match fun.0(args, ctx) {
+                        Ok(val) => {
+                            state.pop_n(*num_args);
+                            if *push {
+                                state.push(val);
+                            }
+                        }
+                        Err(err) => {
+                            state.pop_n(*num_args);
                             if state.catch_handler == BB_RETURN {
                                 return Err(err);
                             } else {

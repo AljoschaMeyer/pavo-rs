@@ -4,6 +4,7 @@ use gc_derive::{Trace, Finalize};
 
 use crate::{
     context::{Computation, Context, PavoResult},
+    gc_foreign::Vector,
     util::FnWrap as W,
 };
 
@@ -13,6 +14,7 @@ enum _Value {
     Nil,
     Bool(bool),
     Fun(Fun),
+    Array(Vector<Value>),
 }
 
 impl _Value {
@@ -24,8 +26,16 @@ impl _Value {
         _Value::Bool(b)
     }
 
+    fn new_array(arr: Vector<Value>) -> _Value {
+        _Value::Array(arr)
+    }
+
     pub fn new_builtin2(fun: W<fn(&Value, &Value, &mut Context) -> PavoResult>) -> _Value {
         _Value::Fun(Fun::Builtin2(fun))
+    }
+
+    pub fn new_builtin_many(fun: W<fn(&[Value], &mut Context) -> PavoResult>) -> _Value {
+        _Value::Fun(Fun::BuiltinMany(fun))
     }
 
     fn truthy(&self) -> bool {
@@ -55,8 +65,16 @@ impl Value {
         Value(_Value::new_bool(b))
     }
 
+    pub fn new_array(arr: Vector<Value>) -> Value {
+        Value(_Value::new_array(arr))
+    }
+
     pub fn new_builtin2(fun: W<fn(&Value, &Value, &mut Context) -> PavoResult>) -> Value {
         Value(_Value::new_builtin2(fun))
+    }
+
+    pub fn new_builtin_many(fun: W<fn(&[Value], &mut Context) -> PavoResult>) -> Value {
+        Value(_Value::new_builtin_many(fun))
     }
 
     pub fn truthy(&self) -> bool {
@@ -79,18 +97,25 @@ impl Default for Value {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Trace, Finalize)]
 enum Fun {
     Builtin2(#[unsafe_ignore_trace] W<fn(&Value, &Value, &mut Context) -> PavoResult>),
+    BuiltinMany(#[unsafe_ignore_trace] W<fn(&[Value], &mut Context) -> PavoResult>),
 }
 
 impl Computation for Value {
     fn compute(&self, args: &[Value], cx: &mut Context) -> PavoResult {
         match self.0 {
-            _Value::Fun(Fun::Builtin2(fun)) => {
-                fun.0(
-                    args.get(0).unwrap_or(&Value::new_nil()),
-                    args.get(1).unwrap_or(&Value::new_nil()),
-                    cx
-                )
+            _Value::Fun(ref fun) => match fun {
+                Fun::Builtin2(W(fun)) => {
+                    fun(
+                        args.get(0).unwrap_or(&Value::new_nil()),
+                        args.get(1).unwrap_or(&Value::new_nil()),
+                        cx
+                    )
+                }
+                Fun::BuiltinMany(W(fun)) => {
+                    fun(args, cx)
+                }
             }
+
             _ => Err(Value::new_nil()), // TODO type error
         }
     }

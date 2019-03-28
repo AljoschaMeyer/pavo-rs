@@ -8,6 +8,7 @@ Pavo is dynamically typed. Variables bindings don't have statically known types,
 
 - `nil`: The unit type.
 - `bool`: Either `true` or `false`.
+- `array`: An ordered sequence of values.
 - `function`: A function, or strictly speaking a closure.
 
 ### Nil
@@ -18,11 +19,17 @@ The `nil` type only holds a single value: `nil` (which is also the literal of th
 
 The `bool` type holds two values: `true` and `false` (which are also the literals of the values).
 
+### Arrays
+
+An `array` is an immutable, ordered sequence of pavo values, potentially heterogenous. Array literals are written as `[]`, `[foo]`, `[foo, bar, ...]`.
+
 ### Function
 
 A `function` represents a computation. The function can be applied to some arguments, and either returns a value or throws one.
 
-## Other Toplevel Functions
+## Other Toplevel Values
+
+Toplevel values (mostly functions) that are not explicitly tied to any one type. Sorted into some rough categories.
 
 ### Equality and Ordering
 

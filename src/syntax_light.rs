@@ -40,7 +40,11 @@ pub enum _Expression<'a> {
         W<fn(&Value, &Value, &mut Context) -> PavoResult>,
         Box<Expression<'a>>,
         Box<Expression<'a>>
-    )
+    ),
+    BuiltinMany(
+        W<fn(&[Value], &mut Context) -> PavoResult>,
+        Vec<Expression<'a>>,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -175,13 +179,10 @@ impl<'a> From<PavoExpression<'a>> for Expression<'a> {
                     rhs.into()
                 ),
             }
-
-
-            // Builtin2(
-            //     W<fn(&Value, &Value, &mut Context) -> PavoResult>,
-            //     Box<Expression<'a>>,
-            //     Box<Expression<'a>>
-            // )
+            _PavoExpression::Array(inners) => _Expression::BuiltinMany(
+                W(builtins::arr_new),
+                inners.into_iter().map(Into::into).collect()
+            ),
         })
     }
 }
