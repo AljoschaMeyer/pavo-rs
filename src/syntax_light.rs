@@ -3,9 +3,6 @@
 //! Regular syntax is translated into this directly after parsing. The remaining layers of the
 //! program are only aware of this more manageable pavo subset.
 
-use nom::types::CompleteStr;
-use nom_locate::LocatedSpan;
-
 use crate::syntax::{
     Id,
     Statement as PavoStatement,
@@ -17,104 +14,102 @@ use crate::syntax::{
     _BinderPattern,
 };
 use crate::builtins;
-use crate::util::FnWrap as W;
+use crate::util::{FnWrap as W, SrcLocation};
 use crate::value::Value;
 use crate::context::{Context, PavoResult};
 
-type Span<'a> = LocatedSpan<CompleteStr<'a>>;
+#[derive(Debug, Clone, PartialEq)]
+pub struct Expression(pub SrcLocation, pub _Expression);
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Expression<'a>(pub Span<'a>, pub _Expression<'a>);
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum _Expression<'a> {
+pub enum _Expression {
     Nil,
     Bool(bool),
-    Id(Id<'a>),
-    If(Box<Expression<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
-    While(Box<Expression<'a>>, Vec<Statement<'a>>),
-    Try(Vec<Statement<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
+    Id(Id),
+    If(Box<Expression>, Vec<Statement>, Vec<Statement>),
+    While(Box<Expression>, Vec<Statement>),
+    Try(Vec<Statement>, Vec<Statement>, Vec<Statement>),
     Thrown, // Evaluates to the last value that has been thrown - has no counterpart in real pavo
-    Invocation(Box<Expression<'a>>, Vec<Expression<'a>>),
+    Invocation(Box<Expression>, Vec<Expression>),
     Builtin2(
         W<fn(&Value, &Value, &mut Context) -> PavoResult>,
-        Box<Expression<'a>>,
-        Box<Expression<'a>>
+        Box<Expression>,
+        Box<Expression>
     ),
     BuiltinMany(
         W<fn(&[Value], &mut Context) -> PavoResult>,
-        Vec<Expression<'a>>,
+        Vec<Expression>,
     ),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Statement<'a>(pub Span<'a>, pub _Statement<'a>);
+pub struct Statement(pub SrcLocation, pub _Statement);
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum _Statement<'a> {
-    Expression(Expression<'a>),
-    Return(Expression<'a>),
-    Break(Expression<'a>),
-    Throw(Expression<'a>),
+pub enum _Statement {
+    Expression(Expression),
+    Return(Expression),
+    Break(Expression),
+    Throw(Expression),
     Let {
-        id: Id<'a>,
+        id: Id,
         mutable: bool,
-        rhs: Expression<'a>,
+        rhs: Expression,
     },
-    Assign(Id<'a>, Expression<'a>),
+    Assign(Id, Expression),
 }
 
 // Functions for generating ast nodes during desugaring. They have bogus source locations. The
 // `&'a str` arguments are an easy way to handle the lifetime requirements, they can be empty.
 
-impl<'a> Expression<'a> {
-    fn bool_(b: bool) -> Expression<'static> {
+impl Expression {
+    fn bool_(b: bool) -> Expression {
         Expression(
-            LocatedSpan::new(CompleteStr("")),
+            SrcLocation::default(),
             _Expression::Bool(b)
         )
     }
 
-    fn if_(cond: Box<Expression<'a>>, then_block: Vec<Statement<'a>>, else_block: Vec<Statement<'a>>) -> Expression<'a> {
+    fn if_(cond: Box<Expression>, then_block: Vec<Statement>, else_block: Vec<Statement>) -> Expression {
         Expression(
-            LocatedSpan::new(CompleteStr("")),
+            SrcLocation::default(),
             _Expression::If(cond, then_block, else_block)
         )
     }
 
-    fn id(the_id: Id<'a>) -> Expression<'a> {
+    fn id(the_id: Id) -> Expression {
         Expression(
-            LocatedSpan::new(CompleteStr("")),
+            SrcLocation::default(),
             _Expression::Id(the_id)
         )
     }
 
-    fn thrown() -> Expression<'static> {
+    fn thrown() -> Expression {
         Expression(
-            LocatedSpan::new(CompleteStr("")),
+            SrcLocation::default(),
             _Expression::Thrown,
         )
     }
 }
 
-impl<'a> Statement<'a> {
-    fn exp(e: Expression<'a>) -> Statement<'a> {
+impl Statement {
+    fn exp(e: Expression) -> Statement {
         Statement(
-            LocatedSpan::new(CompleteStr("")),
+            SrcLocation::default(),
             _Statement::Expression(e)
         )
     }
 
-    fn let_(id: Id<'a>, mutable: bool, rhs: Expression<'a>) -> Statement<'a> {
+    fn let_(id: Id, mutable: bool, rhs: Expression) -> Statement {
         Statement(
-            LocatedSpan::new(CompleteStr("")),
+            SrcLocation::default(),
             _Statement::Let { id, mutable, rhs }
         )
     }
 }
 
-impl<'a> From<PavoExpression<'a>> for Expression<'a> {
-    fn from(exp: PavoExpression<'a>) -> Expression<'a> {
+impl From<PavoExpression> for Expression {
+    fn from(exp: PavoExpression) -> Expression {
         Expression(exp.0, match exp.1 {
             _PavoExpression::Nil => _Expression::Nil,
             _PavoExpression::Bool(b) => _Expression::Bool(b),
@@ -147,7 +142,7 @@ impl<'a> From<PavoExpression<'a>> for Expression<'a> {
                 desugar_statements(body),
             ),
             _PavoExpression::Try(try_block, binder, caught_block, finally_block) => {
-                let mut caught_buf = vec![Statement::let_(Id::new(PAT), false, Expression::thrown())];
+                let mut caught_buf = vec![Statement::let_(Id::dummy(PAT), false, Expression::thrown())];
                 desugar_binder_pattern(binder, &mut caught_buf);
                 do_desugar_statements(caught_block, &mut caught_buf);
                 _Expression::Try(
@@ -187,19 +182,19 @@ impl<'a> From<PavoExpression<'a>> for Expression<'a> {
     }
 }
 
-pub fn desugar_statements<'a>(stmts: Vec<PavoStatement<'a>>) -> Vec<Statement<'a>> {
+pub fn desugar_statements(stmts: Vec<PavoStatement>) -> Vec<Statement> {
     let mut buf = vec![];
     do_desugar_statements(stmts, &mut buf);
     buf
 }
 
-fn do_desugar_statements<'a>(stmts: Vec<PavoStatement<'a>>, buf: &mut Vec<Statement<'a>>) {
+fn do_desugar_statements(stmts: Vec<PavoStatement>, buf: &mut Vec<Statement>) {
     for stmt in stmts.into_iter() {
         desugar_statement(stmt, buf);
     }
 }
 
-fn desugar_statement<'a>(stmt: PavoStatement<'a>, buf: &mut Vec<Statement<'a>>) {
+fn desugar_statement(stmt: PavoStatement, buf: &mut Vec<Statement>) {
     match stmt.1 {
         _PavoStatement::Expression(exp) => buf.push(Statement(
             stmt.0, _Statement::Expression(exp.into())
@@ -216,7 +211,7 @@ fn desugar_statement<'a>(stmt: PavoStatement<'a>, buf: &mut Vec<Statement<'a>>) 
         _PavoStatement::Let(pat, rhs) => {
             buf.push(Statement(
                 stmt.0,
-                _Statement::Let { id: Id::new(PAT), mutable: false, rhs: rhs.into() }
+                _Statement::Let { id: Id::dummy(PAT), mutable: false, rhs: rhs.into() }
             ));
             desugar_binder_pattern(pat, buf);
         }
@@ -229,17 +224,18 @@ fn desugar_statement<'a>(stmt: PavoStatement<'a>, buf: &mut Vec<Statement<'a>>) 
 // special str used as a prefix for the "identifiers" generated during pattern desugaring
 const PAT: &str = "ß";
 
-fn desugar_binder_pattern<'a>(pat: BinderPattern<'a>, buf: &mut Vec<Statement<'a>>) {
+fn desugar_binder_pattern(pat: BinderPattern, buf: &mut Vec<Statement>) {
     match pat.1 {
         _BinderPattern::Blank => { /* no-op */ },
         _BinderPattern::Id(id, mutable) => {
-            buf.push(Statement::let_(id, mutable, Expression::id(Id::new(PAT))));
+            buf.push(Statement::let_(id, mutable, Expression::id(Id::dummy(PAT))));
         }
+        _ => unreachable!(),
     }
 }
 
-impl<'a> From<Box<PavoExpression<'a>>> for Box<Expression<'a>> {
-    fn from(stmt: Box<PavoExpression<'a>>) -> Self {
+impl From<Box<PavoExpression>> for Box<Expression> {
+    fn from(stmt: Box<PavoExpression>) -> Self {
         Box::new((*stmt).into())
     }
 }

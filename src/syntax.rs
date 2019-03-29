@@ -3,38 +3,39 @@
 //! Pavo uses C-like syntax, devided into expressions and statements. Statements can be chained
 //! with semicolons.
 
-use nom::types::CompleteStr;
-use nom_locate::LocatedSpan;
-
-type Span<'a> = LocatedSpan<CompleteStr<'a>>;
+use crate::util::SrcLocation;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Id<'a>(pub Span<'a>);
+pub struct Id(pub String, pub SrcLocation);
 
-impl<'a> Id<'a> {
-    pub fn new(id: &'a str) -> Id<'a> {
-        Id(Span::new(CompleteStr(id)))
+impl Id {
+    pub fn new(id: &str, loc: SrcLocation) -> Id {
+        Id(id.to_string(), loc)
+    }
+
+    pub fn dummy(id: &str) -> Id {
+        Id::new(id, SrcLocation::default())
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Expression<'a>(pub Span<'a>, pub _Expression<'a>);
+pub struct Expression(pub SrcLocation, pub _Expression);
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum _Expression<'a> {
+pub enum _Expression {
     Nil,
     Bool(bool),
-    Id(Id<'a>),
-    If(Box<Expression<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
-    Land(Box<Expression<'a>>, Box<Expression<'a>>),
-    Lor(Box<Expression<'a>>, Box<Expression<'a>>),
-    While(Box<Expression<'a>>, Vec<Statement<'a>>),
-    Try(Vec<Statement<'a>>, BinderPattern<'a>, Vec<Statement<'a>>, Vec<Statement<'a>>),
-    QM(Box<Expression<'a>>),
-    Invocation(Box<Expression<'a>>, Vec<Expression<'a>>),
-    Method(Box<Expression<'a>>, Id<'a>, Vec<Expression<'a>>),
-    BinOp(Box<Expression<'a>>, BinOp, Box<Expression<'a>>),
-    Array(Vec<Expression<'a>>),
+    Id(Id),
+    If(Box<Expression>, Vec<Statement>, Vec<Statement>),
+    Land(Box<Expression>, Box<Expression>),
+    Lor(Box<Expression>, Box<Expression>),
+    While(Box<Expression>, Vec<Statement>),
+    Try(Vec<Statement>, BinderPattern, Vec<Statement>, Vec<Statement>),
+    QM(Box<Expression>),
+    Invocation(Box<Expression>, Vec<Expression>),
+    Method(Box<Expression>, Id, Vec<Expression>),
+    BinOp(Box<Expression>, BinOp, Box<Expression>),
+    Array(Vec<Expression>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,62 +44,82 @@ pub enum BinOp {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Statement<'a>(pub Span<'a>, pub _Statement<'a>);
+pub struct Statement(pub SrcLocation, pub _Statement);
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum _Statement<'a> {
-    Expression(Expression<'a>),
-    Return(Expression<'a>),
-    Break(Expression<'a>),
-    Throw(Expression<'a>),
-    Let(BinderPattern<'a>, Expression<'a>),
-    Assign(Id<'a>, Expression<'a>),
+pub enum _Statement {
+    Expression(Expression),
+    Return(Expression),
+    Break(Expression),
+    Throw(Expression),
+    Let(BinderPattern, Expression),
+    Assign(Id, Expression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BinderPattern<'a>(pub Span<'a>, pub _BinderPattern<'a>);
+pub struct BinderPattern(pub SrcLocation, pub _BinderPattern);
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum _BinderPattern<'a> {
+pub enum _BinderPattern {
     Blank,
-    Id(Id<'a>, bool), // true iff mutable
+    Id(Id, bool), // true iff mutable
+    Array(OuterArrayPattern)
 }
 
-impl<'a> BinderPattern<'a> {
-    pub fn blank() -> BinderPattern<'static> {
+impl BinderPattern {
+    pub fn blank() -> BinderPattern {
         BinderPattern(
-            LocatedSpan::new(CompleteStr("")),
+            SrcLocation::default(),
             _BinderPattern::Blank
         )
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct OuterArrayPattern(pub SrcLocation, pub _OuterArrayPattern);
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum _OuterArrayPattern {
+    Closed(Vec<ArrayPattern>),
+    Open(Vec<ArrayPattern>),
+    OpenNamed(Vec<ArrayPattern>, Id, bool), // true iff mutable
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrayPattern(pub SrcLocation, pub _ArrayPattern);
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum _ArrayPattern {
+    QM(Id, bool), // true iff mutable
+    Regular(BinderPattern)
+}
+
 // Used during parsing to generate default `nil`s for missing stuff
-impl<'a> Expression<'a> {
-    pub fn nil() -> Expression<'static> {
+impl Expression {
+    pub fn nil() -> Expression {
         Expression(
-            LocatedSpan::new(CompleteStr("")),
+            SrcLocation::default(),
             _Expression::Nil,
         )
     }
 
     pub fn try_(
-        try_block: Vec<Statement<'a>>,
-        pat: BinderPattern<'a>,
-        catch_block: Vec<Statement<'a>>,
-        finally_block: Vec<Statement<'a>>
-    ) -> Expression<'a> {
+        try_block: Vec<Statement>,
+        pat: BinderPattern,
+        catch_block: Vec<Statement>,
+        finally_block: Vec<Statement>
+    ) -> Expression {
         Expression(
-            LocatedSpan::new(CompleteStr("")),
+            SrcLocation::default(),
             _Expression::Try(try_block, pat, catch_block, finally_block),
         )
     }
 }
 
-impl<'a> Statement<'a> {
-    pub fn exp(expr: Expression<'a>) -> Statement<'a> {
+impl Statement {
+    pub fn exp(expr: Expression) -> Statement {
         Statement(
-            LocatedSpan::new(CompleteStr("")),
+            SrcLocation::default(),
             _Statement::Expression(expr)
         )
     }

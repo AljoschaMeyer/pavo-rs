@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
 use failure_derive::Fail;
-use nom::types::CompleteStr;
-use nom_locate::LocatedSpan;
 
 use crate::syntax::Id;
 use crate::syntax_light::{
@@ -121,10 +119,10 @@ impl Stack {
 
             // traverse all scopes in lifo order
             loop  {
-                match self.0[env_level].0[scope_level].get(id.0.fragment.0) {
+                match self.0[env_level].0[scope_level].get(&id.0) {
                     Some((binding_id, mutability)) => {
                         if mutating && !mutability {
-                            return Err(AnalysisError::Immutable(SrcLocation::from_span(&id.0)));
+                            return Err(AnalysisError::Immutable(id.1));
                         } else {
                             return Ok(DeBruijn {
                                 up: num_envs - (env_level + 1),
@@ -150,7 +148,7 @@ impl Stack {
         }
 
         // We looked in all scopes and all environments, but the id wasn't bound.
-        return Err(AnalysisError::Free(SrcLocation::from_span(&id.0)));
+        return Err(AnalysisError::Free(id.1));
     }
 }
 
@@ -158,52 +156,50 @@ impl Stack {
 // Yet another syntax tree, this time with DeBruijn indices rather than identifiers. //
 ///////////////////////////////////////////////////////////////////////////////////////
 
-type Span<'a> = LocatedSpan<CompleteStr<'a>>;
+#[derive(Debug, Clone, PartialEq)]
+pub struct Expression(pub SrcLocation, pub _Expression);
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Expression<'a>(pub Span<'a>, pub _Expression<'a>);
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum _Expression<'a> {
+pub enum _Expression {
     Nil,
     Bool(bool),
     Id(DeBruijn),
-    If(Box<Expression<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
-    While(Box<Expression<'a>>, Vec<Statement<'a>>),
-    Try(Vec<Statement<'a>>, Vec<Statement<'a>>, Vec<Statement<'a>>),
+    If(Box<Expression>, Vec<Statement>, Vec<Statement>),
+    While(Box<Expression>, Vec<Statement>),
+    Try(Vec<Statement>, Vec<Statement>, Vec<Statement>),
     Thrown,
-    Invocation(Box<Expression<'a>>, Vec<Expression<'a>>),
+    Invocation(Box<Expression>, Vec<Expression>),
     Builtin2(
         W<fn(&Value, &Value, &mut Context) -> PavoResult>,
-        Box<Expression<'a>>,
-        Box<Expression<'a>>
+        Box<Expression>,
+        Box<Expression>
     ),
     BuiltinMany(
         W<fn(&[Value], &mut Context) -> PavoResult>,
-        Vec<Expression<'a>>,
+        Vec<Expression>,
     ),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Statement<'a>(pub Span<'a>, pub _Statement<'a>);
+pub struct Statement(pub SrcLocation, pub _Statement);
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum _Statement<'a> {
-    Expression(Expression<'a>),
-    Return(Expression<'a>),
-    Break(Expression<'a>),
-    Throw(Expression<'a>),
-    Assign(DeBruijn, Expression<'a>),
+pub enum _Statement {
+    Expression(Expression),
+    Return(Expression),
+    Break(Expression),
+    Throw(Expression),
+    Assign(DeBruijn, Expression),
 }
 
-pub fn analyze_statements<'a>(ast: Vec<LightStatement<'a>>, top_level: &'static [&'static str]) -> Result<Vec<Statement<'a>>, AnalysisError> {
+pub fn analyze_statements(ast: Vec<LightStatement>, top_level: &'static [&'static str]) -> Result<Vec<Statement>, AnalysisError> {
     let mut s = Stack::with_toplevel(top_level);
     let ret = do_analyze_statements(ast, &mut s);
     debug_assert!(s.0.len() == 2, "Mismatched number of push and pops: Too few pops");
     return ret;
 }
 
-fn do_analyze_statements<'a>(stmts: Vec<LightStatement<'a>>, s: &mut Stack) -> Result<Vec<Statement<'a>>, AnalysisError> {
+fn do_analyze_statements(stmts: Vec<LightStatement>, s: &mut Stack) -> Result<Vec<Statement>, AnalysisError> {
     s.push_scope();
 
     let mut ret = Vec::with_capacity(stmts.len());
@@ -215,7 +211,7 @@ fn do_analyze_statements<'a>(stmts: Vec<LightStatement<'a>>, s: &mut Stack) -> R
     return Ok(ret);
 }
 
-fn do_analyze_statement<'a>(stmt: LightStatement<'a>, s: &mut Stack) -> Result<Statement<'a>, AnalysisError> {
+fn do_analyze_statement(stmt: LightStatement, s: &mut Stack) -> Result<Statement, AnalysisError> {
     match stmt.1 {
         _LightStatement::Expression(exp) => Ok(Statement(
             stmt.0, _Statement::Expression(do_analyze_exp(exp, s)?)
@@ -230,7 +226,7 @@ fn do_analyze_statement<'a>(stmt: LightStatement<'a>, s: &mut Stack) -> Result<S
             stmt.0, _Statement::Throw(do_analyze_exp(exp, s)?)
         )),
         _LightStatement::Let { id, mutable, rhs } => {
-            let binding_id = s.add_binding(id.0.fragment.0, mutable);
+            let binding_id = s.add_binding(&id.0, mutable);
             Ok(Statement(stmt.0, _Statement::Assign(DeBruijn { up: 0, id: binding_id}, do_analyze_exp(rhs, s)?)))
         },
         _LightStatement::Assign(id, rhs) => {
@@ -240,7 +236,7 @@ fn do_analyze_statement<'a>(stmt: LightStatement<'a>, s: &mut Stack) -> Result<S
     }
 }
 
-fn do_analyze_exp<'a>(exp: LightExpression<'a>, s: &mut Stack) -> Result<Expression<'a>, AnalysisError> {
+fn do_analyze_exp(exp: LightExpression, s: &mut Stack) -> Result<Expression, AnalysisError> {
     match exp.1 {
         _LightExpression::Nil => Ok(Expression(exp.0, _Expression::Nil)),
         _LightExpression::Bool(b) => Ok(Expression(exp.0, _Expression::Bool(b))),
@@ -291,11 +287,11 @@ fn do_analyze_exp<'a>(exp: LightExpression<'a>, s: &mut Stack) -> Result<Express
     }
 }
 
-fn do_analyze_exp_box<'a>(exp: Box<LightExpression<'a>>, s: &mut Stack) -> Result<Box<Expression<'a>>, AnalysisError> {
+fn do_analyze_exp_box(exp: Box<LightExpression>, s: &mut Stack) -> Result<Box<Expression>, AnalysisError> {
     Ok(Box::new(do_analyze_exp(*exp, s)?))
 }
 
-fn do_analyze_exps<'a>(exps: Vec<LightExpression<'a>>, s: &mut Stack) -> Result<Vec<Expression<'a>>, AnalysisError> {
+fn do_analyze_exps(exps: Vec<LightExpression>, s: &mut Stack) -> Result<Vec<Expression>, AnalysisError> {
     let mut ret = Vec::with_capacity(exps.len());
 
     for exp in exps.into_iter() {

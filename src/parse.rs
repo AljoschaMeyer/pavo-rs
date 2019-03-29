@@ -106,13 +106,11 @@ fn id<'a>(i: Span<'a>) -> IResult<Span<'a>, Id> {
     };
 
     let the_id_str = &i.fragment[..len];
-    let mut the_id = i.clone();
-    the_id.fragment = CompleteStr(the_id_str);
 
     if is_kw(the_id_str) {
         Err(Err::Error(Context::Code(remaining, ErrorKind::Custom(0))))
     } else {
-        Ok((remaining, Id(the_id)))
+        Ok((remaining, Id::new(the_id_str, SrcLocation::from_span(&i))))
     }
 }
 
@@ -125,19 +123,19 @@ fn is_kw(id: &str) -> bool {
 }
 
 named!(exp_id(Span) -> Expression, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     the_id: id >>
     (Expression(pos, _Expression::Id(the_id)))
 ));
 
 named!(exp_nil(Span) -> Expression, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     kw!("nil") >>
     (Expression(pos, _Expression::Nil))
 ));
 
 named!(exp_bool(Span) -> Expression, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     b: alt!(value!(true, kw!("true")) | value!(false, kw!("false"))) >>
     (Expression(pos, _Expression::Bool(b)))
 ));
@@ -148,7 +146,7 @@ named!(exp_atomic(Span) -> Expression, alt!(
 ));
 
 named!(exp_if(Span) -> Expression, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     kw!("if") >>
     cond: map!(exp, Box::new) >>
     if_block: block >>
@@ -169,7 +167,7 @@ named!(exp_if(Span) -> Expression, do_parse!(
 ));
 
 named!(exp_while(Span) -> Expression, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     kw!("while") >>
     cond: map!(exp, Box::new) >>
     loop_block: block >>
@@ -177,7 +175,7 @@ named!(exp_while(Span) -> Expression, do_parse!(
 ));
 
 named!(exp_try(Span) -> Expression, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     kw!("try") >>
     try_block: block >>
     kw!("catch") >>
@@ -200,7 +198,7 @@ named!(exp_blocky(Span) -> Expression, alt!(
 ));
 
 named!(exp_array(Span) -> Expression, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     arr: delimited!(
         lbracket,
         separated_list!(comma, exp),
@@ -216,7 +214,7 @@ named!(exp_binop_1300(Span) -> Expression, do_parse!(expr: non_leftrecursive_exp
 // 1200 is the precedence level
 // `call, index`
 named!(exp_binop_1200(Span) -> Expression, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     first: exp_binop_1300 >>
     fold: fold_many0!(
         delimited!(
@@ -233,7 +231,7 @@ named!(exp_binop_1200(Span) -> Expression, do_parse!(
 // 1100 is the precedence level
 // `::`
 named!(exp_binop_1100(Span) -> Expression, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     first: exp_binop_1200 >>
     fold: fold_many0!(
         do_parse!(
@@ -255,7 +253,7 @@ named!(exp_binop_1100(Span) -> Expression, do_parse!(
 // 1000 is the precedence level
 // `?`
 named!(exp_binop_1000(Span) -> Expression, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     first: exp_binop_1100 >>
     fold: fold_many0!(
         do_parse!(
@@ -299,7 +297,7 @@ named!(exp_binop_300(Span) -> Expression, do_parse!(expr: exp_binop_400 >> (expr
 // 200 is the precedence level
 // `==, !=, <, <=, >, >=`
 named!(exp_binop_200(Span) -> Expression, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     first: exp_binop_300 >>
     fold: fold_many0!(
         do_parse!(
@@ -318,7 +316,7 @@ named!(exp_binop_200(Span) -> Expression, do_parse!(
 // 100 is the precedence level
 // `&&`
 named!(exp_binop_100(Span) -> Expression, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     first: exp_binop_200 >>
     fold: fold_many0!(
         do_parse!(
@@ -351,7 +349,7 @@ named!(non_leftrecursive_exp(Span) -> Expression, alt!(
 // This is the left-recursive expression of the lowest precedence level
 // `||`
 named!(exp(Span) -> Expression, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     first: exp_binop_100 >>
     fold: fold_many0!(
         do_parse!(
@@ -371,28 +369,28 @@ named!(stmt_exp(Span) -> Statement, do_parse!(
 ));
 
 named!(stmt_return(Span) -> Statement, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     kw!("return") >>
     expr: map!(opt!(exp), |maybe_exp| maybe_exp.unwrap_or(Expression::nil())) >>
     (Statement(pos, _Statement::Return(expr)))
 ));
 
 named!(stmt_break(Span) -> Statement, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     kw!("break") >>
     expr: map!(opt!(exp), |maybe_exp| maybe_exp.unwrap_or(Expression::nil())) >>
     (Statement(pos, _Statement::Break(expr)))
 ));
 
 named!(stmt_throw(Span) -> Statement, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     kw!("throw") >>
     expr: map!(opt!(exp), |maybe_exp| maybe_exp.unwrap_or(Expression::nil())) >>
     (Statement(pos, _Statement::Throw(expr)))
 ));
 
 named!(stmt_let(Span) -> Statement, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     kw!("let") >>
     pat: binder_pat >>
     assign >>
@@ -401,7 +399,7 @@ named!(stmt_let(Span) -> Statement, do_parse!(
 ));
 
 named!(stmt_assign(Span) -> Statement, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     the_id: id >>
     assign >>
     expr: exp >>
@@ -429,13 +427,13 @@ named!(pattern_id(Span) -> (Id, bool), do_parse!(
 ));
 
 named!(binder_id(Span) -> BinderPattern, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     pat: map!(pattern_id, |(binder, mutable)| _BinderPattern::Id(binder, mutable)) >>
     (BinderPattern(pos, pat))
 ));
 
 named!(binder_blank(Span) -> BinderPattern, do_parse!(
-    pos: position!() >>
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     pat: value!(_BinderPattern::Blank, blank) >>
     (BinderPattern(pos, pat))
 ));

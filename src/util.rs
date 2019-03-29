@@ -8,11 +8,21 @@ use nom_locate::LocatedSpan;
 
 type Span<'a> = LocatedSpan<CompleteStr<'a>>;
 
-#[derive(PartialEq, Eq, Debug, Clone, Hash, PartialOrd, Ord)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Hash, PartialOrd, Ord)]
 pub struct SrcLocation {
     offset: usize,
     line: u32,
     col: usize,
+}
+
+impl Default for SrcLocation {
+    fn default() -> Self {
+        SrcLocation {
+            offset: 0,
+            line: 0,
+            col: 0
+        }
+    }
 }
 
 impl SrcLocation {
