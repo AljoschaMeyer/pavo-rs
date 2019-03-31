@@ -1,6 +1,8 @@
 // Shared state across the evaluation of a pavo computation.
 
+use crate::gc_foreign::Vector;
 use crate::value::Value;
+use crate::builtins::as_arr;
 
 /// The outcome of a pavo computation: Either the computation succesfully produces a `Value` (`Ok`),
 /// or it throws one (`Err`).
@@ -23,7 +25,17 @@ pub trait Computation {
     /// `self` is the static representation of the computation that is executed.
     /// `args` are the input values to the computation.
     /// `cx` is the `Context` in which the computation happens.
-    fn compute(&self, args: &[Value], cx: &mut Context) -> PavoResult;
+    fn compute(&self, args: &[Value], cx: &mut Context) -> PavoResult {
+        self.compute_vector(Vector(args.into()), cx)
+    }
+
+    fn compute_vector(&self, args: Vector<Value>, cx: &mut Context) -> PavoResult {
+        self.compute(&args.0.iter().map(Clone::clone).collect::<Vec<Value>>()[..], cx)
+    }
+
+    fn compute_value(&self, args: &Value, cx: &mut Context) -> PavoResult {
+        self.compute_vector(as_arr(args)?, cx)
+    }
 }
 
 impl Computation for fn(&mut Context) -> PavoResult {

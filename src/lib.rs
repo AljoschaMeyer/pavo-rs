@@ -64,8 +64,8 @@ mod tests {
 
     fn assert_pavo_ok(src: &str, expected: Value) {
         match execute_pavo(src) {
-            Err(err) => panic!("Unexpected parser error: {:?}", err),
-            Ok(Err(err)) => panic!("Unexpected exception: {:?}", err),
+            Err(err) => panic!("Unexpected static error: {:?}", err),
+            Ok(Err(err)) => panic!("Unexpected runtime error: {:?}", err),
             Ok(Ok(val)) => assert_eq!(val, expected),
         }
     }
@@ -247,5 +247,67 @@ mod tests {
     fn test_arrays() {
         assert_pavo_ok("[] == []", Value::new_bool(true));
         assert_pavo_ok("[[nil], true] == [[nil], true]", Value::new_bool(true));
+    }
+
+    #[test]
+    fn test_array_patterns() {
+        assert_pavo_ok("let [] = []", Value::new_nil());
+        assert_pavo_ok("let [a] = [true]; a", Value::new_bool(true));
+        assert_pavo_ok("let [a, b?] = [true]; a", Value::new_bool(true));
+        assert_pavo_ok("let [a, b?] = [true, false]; b", Value::new_bool(false));
+        assert_pavo_ok("let [a, b?] = [true]; b", Value::new_nil());
+        assert_pavo_ok("let [a, mut b?] = [true]; b = a; b", Value::new_bool(true));
+        assert_pavo_ok("let [a, ...] = [true]; a", Value::new_bool(true));
+        assert_pavo_ok("let [a, ...] = [true, nil, nil]; a", Value::new_bool(true));
+        assert_pavo_ok("let [a, b...] = [false]; b == []", Value::new_bool(true));
+        assert_pavo_ok("let [a, b...] = [false, false]; b == [false]", Value::new_bool(true));
+        assert_pavo_ok("let [a, b...] = [false, false, false]; b == [false, false]", Value::new_bool(true));
+        assert_pavo_ok("let [a, mut b...] = [false]; b = b == []; b", Value::new_bool(true));
+        assert_pavo_ok("let [...] = []; true", Value::new_bool(true));
+        assert_pavo_ok("let [a, b?, c...] = [false]; a", Value::new_bool(false));
+        assert_pavo_ok("let [[a]] = [[true]]; a", Value::new_bool(true));
+        assert_pavo_ok("let [a] = [[true]]; a == [true]", Value::new_bool(true));
+
+        assert_pavo_thrown("let [] = false", Value::new_nil());
+        assert_pavo_thrown("let [] = [false]", Value::new_nil());
+        assert_pavo_thrown("let [a] = [false, false]", Value::new_nil());
+        assert_pavo_thrown("let [...] = false", Value::new_nil());
+        assert_pavo_thrown("let [a...] = false", Value::new_nil());
+        assert_pavo_thrown("let [a, b, c...] = [false]", Value::new_nil());
+        assert_pavo_thrown("let [[]] = [false]", Value::new_nil());
+    }
+
+    #[test]
+    fn test_funs() {
+        assert_pavo_ok("() -> {} == () -> {}", Value::new_bool(false));
+        assert_pavo_ok("let a = () -> {}; a == a", Value::new_bool(true));
+
+        assert_pavo_ok("() -> {}()", Value::new_nil());
+        assert_pavo_ok("() -> {true}()", Value::new_bool(true));
+        assert_pavo_thrown("() -> {}(nil)", Value::new_nil());
+        assert_pavo_ok("(...) -> {true}(nil, false)", Value::new_bool(true));
+        assert_pavo_ok("(a, mut b, c...) -> {
+          b = false;
+          a == b && c == [nil, false]
+        }(false, true, nil, false)", Value::new_bool(true));
+
+        assert_pavo_ok("
+        let a = true;
+        let mut c = false;
+
+        () -> {
+          let mut b = nil;
+
+          # This argument shadows the outer `b` defined two lines above, the outer one is never mutated
+          let foo = (mut b) -> {
+            b = b || a;
+            b
+          };
+
+          let ret = foo(false); # ret gets set to true
+          c = b == nil; # c gets set to true
+
+          ret
+        }() && c # evaluates to true", Value::new_bool(true));
     }
 }

@@ -27,6 +27,50 @@ An `array` is an immutable, ordered sequence of pavo values, potentially heterog
 
 A `function` represents a computation. The function can be applied to some arguments, and either returns a value or throws one.
 
+Functions use reference identity for equality comparisons, not structural equivalence:
+
+```pavo
+() -> {} == () -> {}; # false, these are two distinct function values at different memory addresses
+
+let a = () -> {};
+a == a; # true, both are the same object in memory
+a == () -> {} # false again, the right side is a new, different value
+```
+
+Function literals are written as `(args) -> { statements }`, where `args` is an array pattern without the outer brackets. When a function is applied to a list of arguments, this list is (conceptually) converted into an array and then matched against the argument array pattern. So the argument list can use all the neat features of patterns. A slightly unusual consequence of this: Unless the args pattern ends with `...`, calling the function with too many arguments results in a runtime error.
+
+```pavo
+() -> {}(); # works, evaluates to nil (which is the default for empty blocks)
+() -> {}(nil); # throws, too many arguments (the corresponding array pattern would be `[]`, which doesn't match the argument list `[nil]`)
+(...) -> {}(nil, false); # yup, works
+(a, mut b, c...) -> {
+  b = false;
+  a == b && c == [nil, false]
+}(false, true, nil, false) # evaluates to true
+```
+
+Function literals create lexically scoped *closures*, they capture the environment in which they are contained.
+
+```pavo
+let a = true;
+let mut c = false;
+
+() -> {
+  let mut b = nil;
+
+  # This argument shadows the outer `b` defined two lines above, the outer one is never mutated
+  let foo = (mut b) -> {
+    b = b || a;
+    b
+  };
+
+  let ret = foo(false); # ret gets set to true
+  c = b == nil; # c gets set to true
+
+  ret
+}() && c # evaluates to true
+```
+
 ## Other Toplevel Values
 
 Toplevel values (mostly functions) that are not explicitly tied to any one type. Sorted into some rough categories.
@@ -129,6 +173,46 @@ if x {
   }
 };
 x # still `true`, we never mutated the outermost binding
+```
+
+#### Array Pattern
+
+An array pattern looks like an array, except it lists patterns rather than expressions. To match the pattern, the length of the array must equal the length of the pattern.
+
+```pavo
+let [mut a, b, _] = [true, false, true]; # now a == true and b == false
+let [a, b] = [true]; # this errors, length mismatch
+let [a] = [true, false] # another length mismatch, another error
+let [] = [] # this works
+let [a] = true # if the expresson does not evaluate to an array, it errors
+```
+
+Id patterns inside an array pattern can be made optional by suffixing them with a `?`. If the array value is too short, the pattern still matches and the identifier is bound to `nil`.
+
+```pavo
+let [a, b?] = [true] # a == true, b == nil
+let [a, b?, c] = [true] # errors, length mismatch
+let [a, b?] = [true, false, true] # errors, length mismatch
+```
+
+If you only care about the first values of an array but not about any remaining ones, you can use `...` as the last part of an array pattern.
+
+```pavo
+let [a, ...] = [true, false, nil] # a == true
+let [a, ...] = [true] # a == true
+let [a, ...] = [] # errors, length mismtach
+let [a?, ...] = [] # works, a == nil
+```
+
+Finally, you can bind the remaining values to a name:
+
+```pavo
+let [a, b...] = [true, false, nil] # a == true and b == [false, nil]
+let [a, mut b...] = [true, false] # a == true and b == [false]
+let [a, b...] = [true] # a == true and b == []
+let [a, b?, c...] = [true] # a == true and b == nil and c == []
+let [a?, b...] = [] # a == nil and b == []
+let [a?, b...] = [true] # a == true and b == []
 ```
 
 ### Expressions

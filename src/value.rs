@@ -1,109 +1,98 @@
 //! The values manipulated at runtime.
+use std::ops::Deref;
 
+use gc::Gc;
 use gc_derive::{Trace, Finalize};
 
 use crate::{
     context::{Computation, Context, PavoResult},
     gc_foreign::Vector,
     util::FnWrap as W,
+    ir::Closure,
 };
 
 // Runtime representation of an arbitrary pavo value.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Trace, Finalize)]
-enum _Value {
+pub enum Value {
     Nil,
     Bool(bool),
+    Int(i64),
     Fun(Fun),
     Array(Vector<Value>),
 }
 
-impl _Value {
-    fn new_nil() -> _Value {
-        _Value::Nil
+impl Value {
+    pub fn new_nil() -> Value {
+        Value::Nil
     }
 
-    fn new_bool(b: bool) -> _Value {
-        _Value::Bool(b)
+    pub fn new_bool(b: bool) -> Value {
+        Value::Bool(b)
     }
 
-    fn new_array(arr: Vector<Value>) -> _Value {
-        _Value::Array(arr)
+    pub fn new_int_usize(n: usize) -> Value {
+        Value::new_int(n as i64)
     }
 
-    pub fn new_builtin2(fun: W<fn(&Value, &Value, &mut Context) -> PavoResult>) -> _Value {
-        _Value::Fun(Fun::Builtin2(fun))
+    pub fn new_int(n: i64) -> Value {
+        Value::Int(n)
     }
 
-    pub fn new_builtin_many(fun: W<fn(&[Value], &mut Context) -> PavoResult>) -> _Value {
-        _Value::Fun(Fun::BuiltinMany(fun))
+    pub fn new_array(arr: Vector<Value>) -> Value {
+        Value::Array(arr)
     }
 
-    fn truthy(&self) -> bool {
+    pub fn new_builtin2(fun: W<fn(&Value, &Value, &mut Context) -> PavoResult>) -> Value {
+        Value::Fun(Fun::Builtin2(fun))
+    }
+
+    pub fn new_builtin_many(fun: W<fn(&[Value], &mut Context) -> PavoResult>) -> Value {
+        Value::Fun(Fun::BuiltinMany(fun))
+    }
+
+    pub fn new_closure(c: Gc<Closure>) -> Value {
+        Value::Fun(Fun::Closure(c))
+    }
+
+    pub fn truthy(&self) -> bool {
         match self {
-            _Value::Nil | _Value::Bool(false) => false,
+            Value::Nil | Value::Bool(false) => false,
             _ => true,
         }
     }
 }
 
-impl Default for _Value {
+impl Default for Value {
     fn default() -> Self {
         Self::new_nil()
     }
 }
 
-/// Opaque runtime representation of an arbitrary pavo value.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Trace, Finalize)]
-pub struct Value(_Value);
-
-impl Value {
-    pub fn new_nil() -> Value {
-        Value(_Value::new_nil())
-    }
-
-    pub fn new_bool(b: bool) -> Value {
-        Value(_Value::new_bool(b))
-    }
-
-    pub fn new_array(arr: Vector<Value>) -> Value {
-        Value(_Value::new_array(arr))
-    }
-
-    pub fn new_builtin2(fun: W<fn(&Value, &Value, &mut Context) -> PavoResult>) -> Value {
-        Value(_Value::new_builtin2(fun))
-    }
-
-    pub fn new_builtin_many(fun: W<fn(&[Value], &mut Context) -> PavoResult>) -> Value {
-        Value(_Value::new_builtin_many(fun))
-    }
-
-    pub fn truthy(&self) -> bool {
-        self.0.truthy()
-    }
-
-    pub fn pavo_eq(&self, other: &Value) -> PavoResult {
-        Ok(Value::new_bool(self == other))
-    }
-}
-
-/// The default value is `nil`.
-impl Default for Value {
-    /// Return a value representing `nil`.
-    fn default() -> Self {
-        Value(_Value::default())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Trace, Finalize)]
-enum Fun {
+#[derive(Debug, Clone, Eq, PartialOrd, Ord, Trace, Finalize)]
+pub enum Fun {
     Builtin2(#[unsafe_ignore_trace] W<fn(&Value, &Value, &mut Context) -> PavoResult>),
     BuiltinMany(#[unsafe_ignore_trace] W<fn(&[Value], &mut Context) -> PavoResult>),
+    Closure(Gc<Closure>), // TODO manually impl PartialEq to go for GcEquality only
+}
+
+impl PartialEq for Fun {
+    // Compare closures by pointer equality
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Fun::Builtin2(a), Fun::Builtin2(b)) => a == b,
+            (Fun::BuiltinMany(a), Fun::BuiltinMany(b)) => a == b,
+            (Fun::Closure(a), Fun::Closure(b)) => std::ptr::eq(a.deref(), b.deref()),
+            (Fun::Builtin2(..), _) => false,
+            (Fun::BuiltinMany(..), _) => false,
+            (Fun::Closure(..), _) => false,
+        }
+    }
 }
 
 impl Computation for Value {
     fn compute(&self, args: &[Value], cx: &mut Context) -> PavoResult {
-        match self.0 {
-            _Value::Fun(ref fun) => match fun {
+        match self {
+            Value::Fun(ref fun) => match fun {
                 Fun::Builtin2(W(fun)) => {
                     fun(
                         args.get(0).unwrap_or(&Value::new_nil()),
@@ -114,6 +103,7 @@ impl Computation for Value {
                 Fun::BuiltinMany(W(fun)) => {
                     fun(args, cx)
                 }
+                Fun::Closure(c) => c.compute(args, cx)
             }
 
             _ => Err(Value::new_nil()), // TODO type error

@@ -16,6 +16,10 @@ impl Id {
     pub fn dummy(id: &str) -> Id {
         Id::new(id, SrcLocation::default())
     }
+
+    pub fn pat(level: usize) -> Id {
+        Id::dummy(&format!("{}{}", "ß", level))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +40,7 @@ pub enum _Expression {
     Method(Box<Expression>, Id, Vec<Expression>),
     BinOp(Box<Expression>, BinOp, Box<Expression>),
     Array(Vec<Expression>),
+    Fun(OuterArrayPattern, Vec<Statement>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -92,6 +97,15 @@ pub struct ArrayPattern(pub SrcLocation, pub _ArrayPattern);
 pub enum _ArrayPattern {
     QM(Id, bool), // true iff mutable
     Regular(BinderPattern)
+}
+
+impl ArrayPattern {
+    pub fn is_regular(&self) -> bool {
+        match self.1 {
+            _ArrayPattern::Regular(..) => true,
+            _ => false,
+        }
+    }
 }
 
 // Used during parsing to generate default `nil`s for missing stuff

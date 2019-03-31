@@ -53,6 +53,7 @@ impl Stack {
     fn with_toplevel(ids: &'static [&'static str]) -> Stack {
         let mut s = Stack::new();
         s.push_env();
+        s.push_scope();
 
         for id in ids {
             s.add_binding(&id, false);
@@ -66,17 +67,16 @@ impl Stack {
     // Call this whenever we encounter a function literal.
     fn push_env(&mut self) {
         self.0.push((vec![], 0));
-        self.push_scope();
     }
 
-    // Call this whenever a new scope is created, except for function literals (use push_env there,
-    // which automatically adds an initial scope for the new environment).
+    // Call this whenever a new scope is created, except for function literals (use push_env there).
     fn push_scope(&mut self) {
         let num_envs = self.0.len();
         self.0[num_envs - 1].0.push(HashMap::new());
     }
 
-    // Call this whenever a scope is closed, including function literals.
+    // Call this whenever a scope is closed.
+    // This automatically pops an environment once its last scope is popped.
     fn pop(&mut self) {
         let num_envs = self.0.len();
         let scopes = &mut self.0[num_envs - 1].0;
@@ -163,12 +163,17 @@ pub struct Expression(pub SrcLocation, pub _Expression);
 pub enum _Expression {
     Nil,
     Bool(bool),
+    Int(i64),
     Id(DeBruijn),
     If(Box<Expression>, Vec<Statement>, Vec<Statement>),
     While(Box<Expression>, Vec<Statement>),
     Try(Vec<Statement>, Vec<Statement>, Vec<Statement>),
-    Thrown,
+    Fun(Vec<Statement>),
     Invocation(Box<Expression>, Vec<Expression>),
+    Builtin1(
+        W<fn(&Value, &mut Context) -> PavoResult>,
+        Box<Expression>
+    ),
     Builtin2(
         W<fn(&Value, &Value, &mut Context) -> PavoResult>,
         Box<Expression>,
@@ -178,6 +183,7 @@ pub enum _Expression {
         W<fn(&[Value], &mut Context) -> PavoResult>,
         Vec<Expression>,
     ),
+    NoOp,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -195,7 +201,11 @@ pub enum _Statement {
 pub fn analyze_statements(ast: Vec<LightStatement>, top_level: &'static [&'static str]) -> Result<Vec<Statement>, AnalysisError> {
     let mut s = Stack::with_toplevel(top_level);
     let ret = do_analyze_statements(ast, &mut s);
-    debug_assert!(s.0.len() == 2, "Mismatched number of push and pops: Too few pops");
+    if ret.is_ok() {
+        debug_assert!(
+            s.0.len() == 1, "Mismatched number of push and pops: Too few pops, stack: {:?}", s.0
+        );
+    }
     return ret;
 }
 
@@ -240,6 +250,7 @@ fn do_analyze_exp(exp: LightExpression, s: &mut Stack) -> Result<Expression, Ana
     match exp.1 {
         _LightExpression::Nil => Ok(Expression(exp.0, _Expression::Nil)),
         _LightExpression::Bool(b) => Ok(Expression(exp.0, _Expression::Bool(b))),
+        _LightExpression::Int(n) => Ok(Expression(exp.0, _Expression::Int(n))),
         _LightExpression::Id(id) => {
             Ok(Expression(exp.0, _Expression::Id(s.resolve_binding(&id, false)?)))
         }
@@ -264,11 +275,25 @@ fn do_analyze_exp(exp: LightExpression, s: &mut Stack) -> Result<Expression, Ana
                 do_analyze_statements(finally_block, s)?
             )))
         }
-        _LightExpression::Thrown => Ok(Expression(exp.0, _Expression::Thrown)),
+        _LightExpression::Thrown => Ok(Expression(exp.0, _Expression::NoOp)),
+        _LightExpression::Args => Ok(Expression(exp.0, _Expression::NoOp)),
         _LightExpression::Invocation(fun, args) => {
             Ok(Expression(exp.0, _Expression::Invocation(
                 do_analyze_exp_box(fun, s)?,
                 do_analyze_exps(args, s)?
+            )))
+        }
+        _LightExpression::Fun(body) => {
+            s.push_env();
+            let ret = Ok(Expression(exp.0, _Expression::Fun(
+                do_analyze_statements(body, s)?,
+            )));
+            ret
+        }
+        _LightExpression::Builtin1(fun, arg) => {
+            Ok(Expression(exp.0, _Expression::Builtin1(
+                fun,
+                do_analyze_exp_box(arg, s)?
             )))
         }
         _LightExpression::Builtin2(fun, lhs, rhs) => {

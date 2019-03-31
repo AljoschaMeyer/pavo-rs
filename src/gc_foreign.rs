@@ -34,6 +34,14 @@ impl<T: Clone> Vector<T> {
     pub fn push_back(&mut self, value: T) {
         self.0.push_back(value)
     }
+
+    pub fn get(&self, index: usize) -> Option<&T> {
+        self.0.get(index)
+    }
+
+    pub fn skip(&self, count: usize) -> Self {
+        Vector(self.0.skip(count))
+    }
 }
 
 // /// A garbage-collectable `im_rc::OrdMap`.

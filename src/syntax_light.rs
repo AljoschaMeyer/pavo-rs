@@ -12,6 +12,8 @@ use crate::syntax::{
     BinOp,
     BinderPattern,
     _BinderPattern,
+    OuterArrayPattern, _OuterArrayPattern,
+    ArrayPattern, _ArrayPattern,
 };
 use crate::builtins;
 use crate::util::{FnWrap as W, SrcLocation};
@@ -25,12 +27,19 @@ pub struct Expression(pub SrcLocation, pub _Expression);
 pub enum _Expression {
     Nil,
     Bool(bool),
+    Int(i64),
     Id(Id),
     If(Box<Expression>, Vec<Statement>, Vec<Statement>),
     While(Box<Expression>, Vec<Statement>),
     Try(Vec<Statement>, Vec<Statement>, Vec<Statement>),
     Thrown, // Evaluates to the last value that has been thrown - has no counterpart in real pavo
+    Args, // Evaluates to the arguments of a function application as an array - has no counterpart in real pavo
     Invocation(Box<Expression>, Vec<Expression>),
+    Fun(Vec<Statement>),
+    Builtin1(
+        W<fn(&Value, &mut Context) -> PavoResult>,
+        Box<Expression>
+    ),
     Builtin2(
         W<fn(&Value, &Value, &mut Context) -> PavoResult>,
         Box<Expression>,
@@ -70,6 +79,13 @@ impl Expression {
         )
     }
 
+    fn int_usize(n: usize) -> Expression {
+        Expression(
+            SrcLocation::default(),
+            _Expression::Int(n as i64)
+        )
+    }
+
     fn if_(cond: Box<Expression>, then_block: Vec<Statement>, else_block: Vec<Statement>) -> Expression {
         Expression(
             SrcLocation::default(),
@@ -88,6 +104,13 @@ impl Expression {
         Expression(
             SrcLocation::default(),
             _Expression::Thrown,
+        )
+    }
+
+    fn args() -> Expression {
+        Expression(
+            SrcLocation::default(),
+            _Expression::Args,
         )
     }
 }
@@ -142,7 +165,7 @@ impl From<PavoExpression> for Expression {
                 desugar_statements(body),
             ),
             _PavoExpression::Try(try_block, binder, caught_block, finally_block) => {
-                let mut caught_buf = vec![Statement::let_(Id::dummy(PAT), false, Expression::thrown())];
+                let mut caught_buf = vec![Statement::let_(Id::pat(0), false, Expression::thrown())];
                 desugar_binder_pattern(binder, &mut caught_buf);
                 do_desugar_statements(caught_block, &mut caught_buf);
                 _Expression::Try(
@@ -178,7 +201,21 @@ impl From<PavoExpression> for Expression {
                 W(builtins::arr_new),
                 inners.into_iter().map(Into::into).collect()
             ),
+            _PavoExpression::Fun(args, body) => {
+                let mut stmts = vec![Statement::let_(Id::pat(0), false, Expression::args())];
+
+                do_desugar_binder_outer_array_pattern(args, &mut stmts, 0);
+                do_desugar_statements(body, &mut stmts);
+
+                _Expression::Fun(stmts)
+            }
         })
+    }
+}
+
+impl From<Box<PavoExpression>> for Box<Expression> {
+    fn from(stmt: Box<PavoExpression>) -> Self {
+        Box::new((*stmt).into())
     }
 }
 
@@ -211,7 +248,7 @@ fn desugar_statement(stmt: PavoStatement, buf: &mut Vec<Statement>) {
         _PavoStatement::Let(pat, rhs) => {
             buf.push(Statement(
                 stmt.0,
-                _Statement::Let { id: Id::dummy(PAT), mutable: false, rhs: rhs.into() }
+                _Statement::Let { id: Id::pat(0), mutable: false, rhs: rhs.into() }
             ));
             desugar_binder_pattern(pat, buf);
         }
@@ -221,21 +258,82 @@ fn desugar_statement(stmt: PavoStatement, buf: &mut Vec<Statement>) {
     }
 }
 
-// special str used as a prefix for the "identifiers" generated during pattern desugaring
-const PAT: &str = "ß";
-
 fn desugar_binder_pattern(pat: BinderPattern, buf: &mut Vec<Statement>) {
+    do_desugar_binder_pattern(pat, buf, 0)
+}
+
+fn do_desugar_binder_pattern(pat: BinderPattern, buf: &mut Vec<Statement>, level: usize) {
     match pat.1 {
         _BinderPattern::Blank => { /* no-op */ },
         _BinderPattern::Id(id, mutable) => {
-            buf.push(Statement::let_(id, mutable, Expression::id(Id::dummy(PAT))));
+            buf.push(Statement::let_(id, mutable, Expression::id(Id::pat(level))));
         }
-        _ => unreachable!(),
+        _BinderPattern::Array(p @ OuterArrayPattern(..)) => do_desugar_binder_outer_array_pattern(p, buf, level),
     }
 }
 
-impl From<Box<PavoExpression>> for Box<Expression> {
-    fn from(stmt: Box<PavoExpression>) -> Self {
-        Box::new((*stmt).into())
+fn do_desugar_binder_array_pattern(pat: ArrayPattern, buf: &mut Vec<Statement>, level: usize) {
+    match pat.1 {
+        _ArrayPattern::Regular(inner) => do_desugar_binder_pattern(inner, buf, level),
+        _ArrayPattern::QM(id, mutable) => {
+            buf.push(Statement::let_(id, mutable, Expression::id(Id::pat(level))));
+        }
+    }
+}
+
+fn do_desugar_binder_outer_array_pattern(OuterArrayPattern(src, p): OuterArrayPattern, buf: &mut Vec<Statement>, level: usize) {
+    buf.push(Statement::exp(Expression(src, _Expression::Builtin1(
+        W(builtins::assert_arr),
+        Box::new(Expression::id(Id::pat(level)))
+    ))));
+
+    let (open, named_remaining) = match p {
+        _OuterArrayPattern::Closed(_) => (false, None),
+        _OuterArrayPattern::Open(_) => (true, None),
+        _OuterArrayPattern::OpenNamed(_, ref id, mutable) => (true, Some((id.clone(), mutable))),
+    };
+
+    let num_inners;
+    match p {
+        _OuterArrayPattern::Closed(inners) |
+        _OuterArrayPattern::Open(inners) |
+        _OuterArrayPattern::OpenNamed(inners, _, _) => {
+            num_inners = inners.len();
+            for (i, inner) in inners.into_iter().enumerate() {
+                buf.push(Statement(
+                    inner.0,
+                    _Statement::Let {
+                        id: Id::pat(level + 1),
+                        mutable: false,
+                        rhs: Expression(src, _Expression::Builtin2(
+                            if inner.is_regular() {
+                                W(builtins::arr_get)
+                            } else {
+                                W(builtins::arr_get_or_nil)
+                            },
+                            Box::new(Expression::id(Id::pat(level))),
+                            Box::new(Expression::int_usize(i))
+                        ))
+                    }
+                ));
+                do_desugar_binder_array_pattern(inner, buf, level + 1);
+            }
+
+            if !open {
+                buf.push(Statement::exp(Expression(src, _Expression::Builtin2(
+                    W(builtins::assert_arr_len_at_most),
+                    Box::new(Expression::id(Id::pat(level))),
+                    Box::new(Expression::int_usize(num_inners))
+                ))));
+            }
+
+            if let Some((id, mutable)) = named_remaining {
+                buf.push(Statement::let_(id.clone(), mutable, Expression(src, _Expression::Builtin2(
+                    W(builtins::arr_splice_suffix_helpful),
+                    Box::new(Expression::id(Id::pat(level))),
+                    Box::new(Expression::int_usize(num_inners))
+                ))));
+            }
+        }
     }
 }

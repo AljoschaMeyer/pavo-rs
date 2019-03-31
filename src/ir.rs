@@ -17,6 +17,7 @@ use crate::{
     context::{Computation, Context, PavoResult},
     util::FnWrap as W,
     toplevel::top_level,
+    gc_foreign::Vector,
 };
 
 /// A control flow graph of basic blocks, each consisting of a sequence of statements.
@@ -46,6 +47,8 @@ impl Addr {
 enum Instruction {
     /// Push the value to the stack.
     Literal(Value),
+    /// Create a closure value with the given IrChunk, push it to the stack.
+    FunLiteral(Rc<IrChunk>),
     /// Jump to the given basic block. If the usize is `BB_RETURN`, return from the function instead.
     Jump(BBId),
     /// Jump to the first basic block if the value at the Addr is truthy, else to the second one.
@@ -63,6 +66,9 @@ enum Instruction {
     ///
     /// The args need to be passed to the function in fifo order, *not* lifo.
     Call(usize, bool),
+    /// Invoke the builtin function with the topmost value. If the bool is true, push the result
+    /// onto the stack.
+    CallBuiltin1(W<fn(&Value, &mut Context) -> PavoResult>, bool),
     /// Invoke the builtin function with the two topmost values (fifo). If the bool is true, push
     /// the result onto the stack.
     CallBuiltin2(W<fn(&Value, &Value, &mut Context) -> PavoResult>, bool),
@@ -186,6 +192,7 @@ fn statement_to_ir(statement: Statement, push: bool, bbb: &mut BBB) {
 // Convert a single expression into instructions and basic blocks, using the given BBB..
 fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
     match exp.1 {
+        _Expression::NoOp => {}
         _Expression::Nil => {
             if push {
                 bbb.push_nil();
@@ -194,6 +201,16 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
         _Expression::Bool(b) => {
             if push {
                 bbb.append(Literal(Value::new_bool(b)));
+            }
+        }
+        _Expression::Int(n) => {
+            if push {
+                bbb.append(Literal(Value::new_int(n)));
+            }
+        }
+        _Expression::Fun(body) => {
+            if push {
+                bbb.append(FunLiteral(Rc::new(ast_to_ir(body))));
             }
         }
         _Expression::Id(id) => {
@@ -275,9 +292,6 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
 
             bbb.set_active_block(bb_cont);
         }
-        _Expression::Thrown => {
-            // no-op, thrown value is already on top of the stack
-        }
         _Expression::Invocation(fun, args) => {
             let num_args = args.len();
 
@@ -287,6 +301,10 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
 
             exp_to_ir(*fun, true, bbb);
             bbb.append(Call(num_args, push));
+        }
+        _Expression::Builtin1(fun, arg) => {
+            exp_to_ir(*arg, true, bbb);
+            bbb.append(CallBuiltin1(fun, push))
         }
         _Expression::Builtin2(fun, lhs, rhs) => {
             exp_to_ir(*lhs, true, bbb);
@@ -418,10 +436,16 @@ impl Closure {
     /// Behaves as if the script was the body of a zero-argument function defined in the lexical
     /// scope of the (given) top-level environment.
     pub fn from_script_chunk(script: IrChunk) -> Closure {
+        Closure::from_chunk(Rc::new(script), Environment::child(top_level()), 0)
+    }
+
+    fn from_chunk(fun: Rc<IrChunk>, env: Gc<GcCell<Environment>>, entry: usize) -> Closure {
+        // println!("{:#?}", fun);
+        // println!("");
         Closure {
-            fun: Rc::new(script),
-            env: Environment::child(top_level()),
-            entry: 0,
+            fun,
+            env,
+            entry,
         }
     }
 }
@@ -449,13 +473,21 @@ impl Computation for Closure {
     //
     // Since at this point we only implement the case of running a full pavo file, there is no
     // notion of arguments and we can fully ignore them.
-    fn compute(&self, _: &[Value], ctx: &mut Context) -> PavoResult {
+    fn compute_vector(&self, args: Vector<Value>, ctx: &mut Context) -> PavoResult {
         let mut state = LocalState::new(&self.fun);
+        state.push(Value::new_array(args));
 
         loop {
             state.pc.1 += 1;
             match &self.fun.basic_blocks[state.pc.0][state.pc.1 - 1] {
                 Literal(val) => state.push(val.clone()),
+
+                FunLiteral(chunk) => state.push(Value::new_closure(
+                    Gc::new(Closure::from_chunk(
+                        chunk.clone(),
+                        Environment::child(self.env.clone()),
+                        0))
+                )),
 
                 Jump(block) => {
                     if *block == BB_RETURN {
@@ -506,6 +538,26 @@ impl Computation for Closure {
                         }
                         Err(err) => {
                             state.pop_n(*num_args);
+                            if state.catch_handler == BB_RETURN {
+                                return Err(err);
+                            } else {
+                                state.push(err);
+                                state.pc = (state.catch_handler, 0);
+                            }
+                        }
+                    }
+                }
+
+                CallBuiltin1(fun, push) => {
+                    let arg = state.pop();
+
+                    match fun.0(&arg, ctx) {
+                        Ok(val) => {
+                            if *push {
+                                state.push(val);
+                            }
+                        }
+                        Err(err) => {
                             if state.catch_handler == BB_RETURN {
                                 return Err(err);
                             } else {
