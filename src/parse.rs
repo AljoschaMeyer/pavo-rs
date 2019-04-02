@@ -402,20 +402,6 @@ named!(exp_binop_200(Span) -> Expression, do_parse!(
 // 100 is the precedence level
 // TODO remove this
 named!(exp_binop_100(Span) -> Expression, do_parse!(expr: exp_binop_200 >> (expr)));
-// named!(exp_binop_100(Span) -> Expression, do_parse!(
-//     pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
-//     first: exp_binop_200 >>
-//     fold: fold_many0!(
-//         do_parse!(
-//             land >>
-//             expr: exp_binop_200 >>
-//             (expr)
-//         ),
-//         first,
-//         |acc, item| Expression(pos, _Expression::Land(Box::new(acc), Box::new(item)))
-//     ) >>
-//     (fold)
-// ));
 
 named!(non_leftrecursive_exp(Span) -> Expression, alt!(
     exp_fun |
@@ -656,7 +642,6 @@ pub fn script<'a>(i: Span<'a>) -> Result<Vec<Statement>, ParseError> {
         Err(Err::Error(cx)) | Err(Err::Failure(cx)) => {
             let location = match cx {
                 Context::Code(i, _) => SrcLocation::from_span(&i),
-                // Context::List(cxs) => SrcLocation::from_span(cxs[0].0),
             };
 
             return Err(ParseError {
