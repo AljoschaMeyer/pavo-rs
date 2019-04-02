@@ -22,7 +22,7 @@ The `bool` type holds two values: `true` and `false` (which are also the literal
 
 ### Int
 
-Integers are 64 bit signed integers, capable of representing all values between `- 2^63` and `2^63 - 1` (inclusive). Integer literals can be written in two forms: Either as a sequence of decimal digits, or as the prefix `0x` followed by a sequence of hexadecimal digits (both lower case and upper case letters are fine).
+Integers are 64 bit signed integers, capable of representing all values between `- 2^63` and `2^63 - 1` (inclusive). Integer literals can be written in two forms: Either as a sequence of decimal digits and underscores, or as the prefix `0x` followed by a sequence of hexadecimal digits (both lower case and upper case letters are fine) and underscores. Underscores are ignored when converting into a number, they only serve as a readability aid. An integer literal can not begin with an underscore - such a construct would be parsed as an identifier instead.
 
 Integer literals are always positive, negative integers can be created with the unary `-` operator. Integer literals must be less than or equal to `2^63 - 1`, any greater (i.e. overflowing) literal is a syntax error. In particular, this means that the smallest possible integer (`−9223372036854775808`) can not be written this way as the (positive) literal is `2^63` and thus overflows. You can use the `TODO` toplevel value instead.
 

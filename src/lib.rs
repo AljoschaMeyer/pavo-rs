@@ -316,6 +316,7 @@ mod tests {
         assert_pavo_ok("0x11 == 17", Value::new_bool(true));
         assert_pavo_ok("3 - 7", Value::new_int(-4));
         assert_pavo_ok("100 - 10 - 1 == 89", Value::new_bool(true));
+        assert_pavo_ok("0x__1_1__ == 1__7_", Value::new_bool(true));
     }
 
     #[test]

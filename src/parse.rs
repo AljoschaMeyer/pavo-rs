@@ -148,28 +148,34 @@ fn hex_int<'a>(i: Span<'a>) -> IResult<Span<'a>, (SrcLocation, i64)> {
     let (i, (pos, digits)) = try_parse!(i, do_parse!(
         pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
         tag!("0x") >>
-        digits: is_a!("0123456789abcdefABCDEF") >>
+        digits: is_a!("0123456789abcdefABCDEF_") >>
         ws0 >>
         ((pos, digits))
     ));
 
-    match i64::from_str_radix(&digits.fragment.0, 16) {
+    match i64::from_str_radix(
+        &digits.fragment.0.chars().filter(|ch| *ch != '_').collect::<String>(),
+        16
+    ) {
         Ok(n) => Ok((i, (pos, n))),
-        Err(_) => Err(Err::Error(Context::Code(i, ErrorKind::Custom(1))))
+        Err(_) => Err(Err::Error(Context::Code(i, ErrorKind::Custom(1)))),
     }
 }
 
 fn dec_int<'a>(i: Span<'a>) -> IResult<Span<'a>, (SrcLocation, i64)> {
     let (i, (pos, digits)) = try_parse!(i, do_parse!(
         pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
-        digits: is_a!("0123456789") >>
+        digits: is_a!("0123456789_") >>
         ws0 >>
         ((pos, digits))
     ));
 
-    match i64::from_str_radix(&digits.fragment.0, 10) {
+    match i64::from_str_radix(
+        &digits.fragment.0.chars().filter(|ch| *ch != '_').collect::<String>(),
+        10
+    ) {
         Ok(n) => Ok((i, (pos, n))),
-        Err(_) => Err(Err::Error(Context::Code(i, ErrorKind::Custom(2))))
+        Err(_) => Err(Err::Error(Context::Code(i, ErrorKind::Custom(2)))),
     }
 }
 
