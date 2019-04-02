@@ -310,4 +310,44 @@ mod tests {
           ret
         }() && c # evaluates to true", Value::new_bool(true));
     }
+
+    #[test]
+    fn test_ints() {
+        assert_pavo_ok("0x11 == 17", Value::new_bool(true));
+        assert_pavo_ok("3 - 7", Value::new_int(-4));
+        assert_pavo_ok("100 - 10 - 1 == 89", Value::new_bool(true));
+    }
+
+    #[test]
+    fn test_rec() {
+        assert_pavo_ok("rec check_positive = (n) -> {
+            if n == 0 {
+                true
+            } else {
+                check_positive(n - 1)
+            }
+        };
+        check_positive(49999)", Value::new_bool(true));
+
+        assert_pavo_ok("rec {
+            check_even = (n) -> {
+                if n == 0 {
+                    true
+                } else {
+                    check_odd(n - 1)
+                }
+            };
+
+            check_odd = (n) -> {
+                if n == 0 {
+                    false
+                } else {
+                    check_even(n - 1)
+                }
+            }
+        };
+        check_odd(49999) && check_even(50000)", Value::new_bool(true));
+
+        assert_pavo_ok("rec {}", Value::new_nil());
+    }
 }

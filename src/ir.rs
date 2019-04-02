@@ -13,7 +13,7 @@ use gc_derive::{Trace, Finalize};
 
 use crate::{
     binding_analysis::{Statement, _Statement, Expression, _Expression, DeBruijn},
-    value::Value,
+    value::{Value, Fun},
     context::{Computation, Context, PavoResult},
     util::FnWrap as W,
     toplevel::top_level,
@@ -48,7 +48,8 @@ enum Instruction {
     /// Push the value to the stack.
     Literal(Value),
     /// Create a closure value with the given IrChunk, push it to the stack.
-    FunLiteral(Rc<IrChunk>),
+    /// The BBId is the block at which to begin execution of the chunk.
+    FunLiteral(Rc<IrChunk>, BBId),
     /// Jump to the given basic block. If the usize is `BB_RETURN`, return from the function instead.
     Jump(BBId),
     /// Jump to the first basic block if the value at the Addr is truthy, else to the second one.
@@ -66,6 +67,11 @@ enum Instruction {
     ///
     /// The args need to be passed to the function in fifo order, *not* lifo.
     Call(usize, bool),
+    /// Reuse the current stack for "calling" the closure at the DeBruijn address, entering at its
+    /// entry (read from the closure at runtime, because I'm too lazy to implement this properly),
+    /// by jumping there, with the usize topmost (fifo) arguments as a single array value on
+    /// the stack.
+    TailCall(usize, DeBruijn),
     /// Invoke the builtin function with the topmost value. If the bool is true, push the result
     /// onto the stack.
     CallBuiltin1(W<fn(&Value, &mut Context) -> PavoResult>, bool),
@@ -135,16 +141,65 @@ impl BBB {
     }
 }
 
+#[derive(Debug)]
+struct Tails(Vec<Entry> /* must be sorted ascendingly */);
+
+impl Tails {
+    fn is_tco(&self, fun: &Expression) -> bool {
+        match fun.1 {
+            _Expression::Id(db) => {
+                self.0.binary_search(& Entry {
+                    de_bruijn: db,
+                }).is_ok()
+            }
+            _ => false,
+        }
+    }
+
+    fn empty() -> Tails {
+        Tails(vec![])
+    }
+
+    fn from_de_bruijns<I: Iterator<Item = DeBruijn>>(input: I) -> Tails {
+        Tails(input.map(|de_bruijn| Entry { de_bruijn: DeBruijn { up: 1, id: de_bruijn.id } }).collect())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Entry {
+    de_bruijn: DeBruijn,
+}
+
+impl PartialEq for Entry {
+    fn eq(&self, other: &Self) -> bool {
+        self.de_bruijn == other.de_bruijn
+    }
+}
+
+impl Eq for Entry {}
+
+impl Ord for Entry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.de_bruijn.cmp(&other.de_bruijn)
+    }
+}
+
+impl PartialOrd for Entry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Converts an abstract syntax tree into an `IrChunk`.
 pub fn ast_to_ir(ast: Vec<Statement>) -> IrChunk {
     let mut bbb = BBB::new();
-    block_to_ir(ast, BB_RETURN, true, &mut bbb);
+    block_to_ir(ast, BB_RETURN, true, &mut bbb, &Tails::empty());
     return bbb.into_ir();
 }
 
 // Convert a sequence of statements into instructions and basic blocks, using the given BBB.
 // As the last instruction, jump to the basic block `jump_to`.
-fn block_to_ir(block: Vec<Statement>, jump_to: BBId, push: bool, bbb: &mut BBB) {
+fn block_to_ir(block: Vec<Statement>, jump_to: BBId, push: bool, bbb: &mut BBB, tails: &Tails) {
     let len = block.len();
     if len == 0 {
         if push {
@@ -153,9 +208,9 @@ fn block_to_ir(block: Vec<Statement>, jump_to: BBId, push: bool, bbb: &mut BBB) 
     } else {
         for (i, statement) in block.into_iter().enumerate() {
             if i + 1 < len {
-                statement_to_ir(statement, false, bbb);
+                statement_to_ir(statement, false, bbb, tails);
             } else {
-                statement_to_ir(statement, push, bbb);
+                statement_to_ir(statement, push, bbb, tails);
             }
         }
     }
@@ -164,24 +219,37 @@ fn block_to_ir(block: Vec<Statement>, jump_to: BBId, push: bool, bbb: &mut BBB) 
 }
 
 // Convert a single statement into instructions and basic blocks, using the given BBB..
-fn statement_to_ir(statement: Statement, push: bool, bbb: &mut BBB) {
+fn statement_to_ir(statement: Statement, push: bool, bbb: &mut BBB, tails: &Tails) {
     match statement.1 {
-        _Statement::Expression(exp) => exp_to_ir(exp, push, bbb),
+        _Statement::Expression(exp) => exp_to_ir(exp, push, bbb, tails),
         _Statement::Return(exp) => {
-            exp_to_ir(exp, true, bbb);
+            exp_to_ir(exp, true, bbb, tails);
             bbb.append(Jump(BB_RETURN));
         }
         _Statement::Break(exp) => {
-            exp_to_ir(exp, true, bbb);
+            exp_to_ir(exp, true, bbb, tails);
             bbb.append(Jump(bbb.breakpoint));
         }
         _Statement::Throw(exp) => {
-            exp_to_ir(exp, true, bbb);
+            exp_to_ir(exp, true, bbb, tails);
             bbb.append(Throw);
         }
         _Statement::Assign(de_bruijn, rhs) => {
-            exp_to_ir(rhs, true, bbb);
+            exp_to_ir(rhs, true, bbb, tails);
             bbb.append(Pop(Addr::env(de_bruijn)));
+            if push {
+                bbb.push_nil();
+            }
+        }
+        _Statement::Rec(defs) => {
+            let (chunk, entries) = defs_to_chunk(defs);
+            let chunk = Rc::new(chunk);
+
+            for (db, entry) in entries {
+                bbb.append(FunLiteral(chunk.clone(), entry));
+                bbb.append(Pop(Addr::env(db)))
+            }
+
             if push {
                 bbb.push_nil();
             }
@@ -189,8 +257,27 @@ fn statement_to_ir(statement: Statement, push: bool, bbb: &mut BBB) {
     }
 }
 
-// Convert a single expression into instructions and basic blocks, using the given BBB..
-fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
+// Returns the chunk for the closure, and the entry points (in the same order as the defs)
+fn defs_to_chunk(defs: Vec<(DeBruijn, Vec<Statement>)>) -> (IrChunk, Vec<(DeBruijn, BBId)>) {
+    let mut bbb = BBB::new();
+    let mut tc_info = Vec::with_capacity(defs.len());
+    let tails = Tails::from_de_bruijns(defs.iter().map(|(db, _)| db.clone()));
+
+    for (db, body) in defs.into_iter() {
+        if bbb.current != 0 {
+            let next = bbb.new_block();
+            bbb.set_active_block(next);
+        }
+
+        tc_info.push((db, bbb.current));
+        block_to_ir(body, BB_RETURN, true, &mut bbb, &tails);
+    }
+
+    return (bbb.into_ir(), tc_info);
+}
+
+// Convert a single expression into instructions and basic blocks, using the given BBB.
+fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB, tails: &Tails) {
     match exp.1 {
         _Expression::NoOp => {}
         _Expression::Nil => {
@@ -210,7 +297,7 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
         }
         _Expression::Fun(body) => {
             if push {
-                bbb.append(FunLiteral(Rc::new(ast_to_ir(body))));
+                bbb.append(FunLiteral(Rc::new(ast_to_ir(body)), 0));
             }
         }
         _Expression::Id(id) => {
@@ -219,7 +306,7 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
             }
         },
         _Expression::If(cond, then_block, else_block) => {
-            exp_to_ir(*cond, true, bbb);
+            exp_to_ir(*cond, true, bbb, tails);
 
             let bb_then = bbb.new_block();
             let bb_else = bbb.new_block();
@@ -228,10 +315,10 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
             bbb.append(CondJump(Addr::Stack, bb_then, bb_else));
 
             bbb.set_active_block(bb_then);
-            block_to_ir(then_block, bb_cont, push, bbb);
+            block_to_ir(then_block, bb_cont, push, bbb, tails);
 
             bbb.set_active_block(bb_else);
-            block_to_ir(else_block, bb_cont, push, bbb);
+            block_to_ir(else_block, bb_cont, push, bbb, tails);
 
             bbb.set_active_block(bb_cont);
         }
@@ -251,14 +338,14 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
             // The block for evaluating the condition. It also ensures that we evaluate to the
             // correct value.
             bbb.set_active_block(bb_cond);
-            exp_to_ir(*cond, true, bbb);
+            exp_to_ir(*cond, true, bbb, tails);
             bbb.append(CondJump(Addr::Stack, bb_loop, bb_cont));
 
             // The loop body, we save the old breakpoint and set the new one.
             let prev_breakpoint = bbb.breakpoint;
             bbb.breakpoint = bb_cont;
             bbb.set_active_block(bb_loop);
-            block_to_ir(loop_block, bb_cond, push, bbb);
+            block_to_ir(loop_block, bb_cond, push, bbb, tails);
 
             bbb.set_active_block(bb_cont);
             bbb.breakpoint = prev_breakpoint;
@@ -274,48 +361,57 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB) {
             bbb.set_active_block(bb_try);
             bbb.trap_handler = bb_catch;
             bbb.append(SetCatchHandler(bbb.trap_handler));
-            block_to_ir(try_block, bb_finally, push, bbb);
+            block_to_ir(try_block, bb_finally, push, bbb, tails);
 
             bbb.set_active_block(bb_catch);
             bbb.trap_handler = prev_trap_handler;
             bbb.append(SetCatchHandler(bbb.trap_handler));
-            block_to_ir(catch_block, bb_finally, push, bbb);
+            block_to_ir(catch_block, bb_finally, push, bbb, tails);
 
             bbb.set_active_block(bb_finally);
             bbb.trap_handler = prev_trap_handler;
             bbb.append(SetCatchHandler(bbb.trap_handler));
             if finally_block.len() > 0 {
-                block_to_ir(finally_block, bb_cont, push, bbb);
+                block_to_ir(finally_block, bb_cont, push, bbb, tails);
             } else {
                 bbb.append(Jump(bb_cont));
             }
 
             bbb.set_active_block(bb_cont);
         }
-        _Expression::Invocation(fun, args) => {
+        _Expression::Invocation(fun, args, tail) => {
             let num_args = args.len();
 
             for arg in args.into_iter() {
-                exp_to_ir(arg, true, bbb);
+                exp_to_ir(arg, true, bbb, tails);
             }
 
-            exp_to_ir(*fun, true, bbb);
-            bbb.append(Call(num_args, push));
+            if tail && tails.is_tco(&fun) {
+                match fun.1 {
+                    _Expression::Id(db) => {
+                        bbb.append(TailCall(num_args, db));
+                    }
+                    _ => unreachable!("if `is_tco(&fun)`, then fun must be an identifier expression"),
+                }
+            } else {
+                exp_to_ir(*fun, true, bbb, tails);
+                bbb.append(Call(num_args, push));
+            }
         }
         _Expression::Builtin1(fun, arg) => {
-            exp_to_ir(*arg, true, bbb);
+            exp_to_ir(*arg, true, bbb, tails);
             bbb.append(CallBuiltin1(fun, push))
         }
         _Expression::Builtin2(fun, lhs, rhs) => {
-            exp_to_ir(*lhs, true, bbb);
-            exp_to_ir(*rhs, true, bbb);
+            exp_to_ir(*lhs, true, bbb, tails);
+            exp_to_ir(*rhs, true, bbb, tails);
             bbb.append(CallBuiltin2(fun, push))
         }
         _Expression::BuiltinMany(fun, args) => {
             let num_args = args.len();
 
             for arg in args.into_iter() {
-                exp_to_ir(arg, true, bbb);
+                exp_to_ir(arg, true, bbb, tails);
             }
 
             bbb.append(CallBuiltinMany(fun, num_args, push));
@@ -345,9 +441,9 @@ struct LocalState {
 
 impl LocalState {
     // Create and initialize a `LocalState` suitable for executing the given chunk.
-    fn new(_chunk: &IrChunk) -> LocalState {
+    fn new(_chunk: &IrChunk, entry: BBId) -> LocalState {
         LocalState {
-            pc: (0, 0),
+            pc: (entry, 0),
             stack: vec![],
             catch_handler: BB_RETURN,
         }
@@ -427,7 +523,7 @@ pub struct Closure {
     fun: Rc<IrChunk>,
     env: Gc<GcCell<Environment>>,
     // The basic block at which to begin execution of the `fun`.
-    entry: usize,
+    pub entry: usize,
 }
 
 impl Closure {
@@ -440,8 +536,6 @@ impl Closure {
     }
 
     fn from_chunk(fun: Rc<IrChunk>, env: Gc<GcCell<Environment>>, entry: usize) -> Closure {
-        // println!("{:#?}", fun);
-        // println!("");
         Closure {
             fun,
             env,
@@ -474,7 +568,7 @@ impl Computation for Closure {
     // Since at this point we only implement the case of running a full pavo file, there is no
     // notion of arguments and we can fully ignore them.
     fn compute_vector(&self, args: Vector<Value>, ctx: &mut Context) -> PavoResult {
-        let mut state = LocalState::new(&self.fun);
+        let mut state = LocalState::new(&self.fun, self.entry);
         state.push(Value::new_array(args));
 
         loop {
@@ -482,11 +576,11 @@ impl Computation for Closure {
             match &self.fun.basic_blocks[state.pc.0][state.pc.1 - 1] {
                 Literal(val) => state.push(val.clone()),
 
-                FunLiteral(chunk) => state.push(Value::new_closure(
+                FunLiteral(chunk, entry) => state.push(Value::new_closure(
                     Gc::new(Closure::from_chunk(
                         chunk.clone(),
                         Environment::child(self.env.clone()),
-                        0))
+                        *entry))
                 )),
 
                 Jump(block) => {
@@ -610,6 +704,18 @@ impl Computation for Closure {
                             }
                         }
                     }
+                }
+
+                TailCall(num_args, db) => {
+                    let args = state.args(*num_args);
+                    let args_val = Value::new_array(Vector(args.into()));
+                    state.push(args_val);
+
+                    let block = match &Addr::env(*db).load(&mut state, &self.env) {
+                        Value::Fun(Fun::Closure(c)) => c.entry,
+                        _ => unreachable!("TailCall DeBruijn must point to a closure"),
+                    };
+                    state.pc = (block, 0);
                 }
             }
         }

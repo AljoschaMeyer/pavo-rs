@@ -5,7 +5,7 @@
 use failure_derive::Fail;
 use nom::{
     {line_ending, not_line_ending, multispace1, eof},
-    {value, tag, take_while1, one_of},
+    {value, tag, take_while1, one_of, is_a},
     {do_parse, alt, many0, many1, opt, fold_many0, many_m_n},
     {delimited, separated_list, separated_nonempty_list},
     {named, not, map, try_parse},
@@ -79,6 +79,7 @@ named!(coloncolon(Span) -> (), do_parse!(tag!("::") >> ws0 >> (())));
 named!(eq(Span) -> (), do_parse!(tag!("==") >> ws0 >> (())));
 named!(dots(Span) -> (), do_parse!(tag!("...") >> ws0 >> (())));
 named!(arrow(Span) -> (), do_parse!(tag!("->") >> ws0 >> (())));
+named!(minus(Span) -> (), do_parse!(tag!("-") >> not!(tag!(">")) >> ws0 >> (())));
 
 fn is_id_char(c: char) -> bool {
     return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c == '_');
@@ -89,7 +90,7 @@ fn id<'a>(i: Span<'a>) -> IResult<Span<'a>, Id> {
     let (remaining, len) = if maybe_underscore.is_some() {
         try_parse!(i1, do_parse!(
             len: map!(
-                many_m_n!(1, 254, one_of!("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")),
+                many_m_n!(1, 254, one_of!("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_")),
                 |tail| 1 + tail.len()
             ) >>
             not!(take_while1!(is_id_char)) /* ensure the id isn't even longer */ >>
@@ -100,7 +101,7 @@ fn id<'a>(i: Span<'a>) -> IResult<Span<'a>, Id> {
         try_parse!(i1, do_parse!(
             one_of!("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") >>
             len: map!(
-                many_m_n!(0, 254, one_of!("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")),
+                many_m_n!(0, 254, one_of!("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_")),
                 |tail| 1 + tail.len()
             ) >>
             not!(take_while1!(is_id_char)) /* ensure the id isn't even longer */ >>
@@ -122,8 +123,7 @@ fn is_kw(id: &str) -> bool {
     id == "nil" || id == "true" || id == "false" || id == "if" || id == "else" ||
     id == "return" || id == "break" || id == "while" || id == "mut" || id == "loop" ||
     id == "case" || id == "throw" || id == "try" || id == "catch" || id == "finally" ||
-    id == "async" || id == "await" || id == "for" || id == "nan" || id == "inf" ||
-    id == "let"
+    id == "async" || id == "await" || id == "for" || id == "let" || id == "rec"
 }
 
 named!(exp_id(Span) -> Expression, do_parse!(
@@ -144,9 +144,45 @@ named!(exp_bool(Span) -> Expression, do_parse!(
     (Expression(pos, _Expression::Bool(b)))
 ));
 
+fn hex_int<'a>(i: Span<'a>) -> IResult<Span<'a>, (SrcLocation, i64)> {
+    let (i, (pos, digits)) = try_parse!(i, do_parse!(
+        pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+        tag!("0x") >>
+        digits: is_a!("0123456789abcdefABCDEF") >>
+        ws0 >>
+        ((pos, digits))
+    ));
+
+    match i64::from_str_radix(&digits.fragment.0, 16) {
+        Ok(n) => Ok((i, (pos, n))),
+        Err(_) => Err(Err::Error(Context::Code(i, ErrorKind::Custom(1))))
+    }
+}
+
+fn dec_int<'a>(i: Span<'a>) -> IResult<Span<'a>, (SrcLocation, i64)> {
+    let (i, (pos, digits)) = try_parse!(i, do_parse!(
+        pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+        digits: is_a!("0123456789") >>
+        ws0 >>
+        ((pos, digits))
+    ));
+
+    match i64::from_str_radix(&digits.fragment.0, 10) {
+        Ok(n) => Ok((i, (pos, n))),
+        Err(_) => Err(Err::Error(Context::Code(i, ErrorKind::Custom(2))))
+    }
+}
+
+named!(exp_hex_int(Span) -> Expression, map!(hex_int, |(pos, n)| Expression(pos, _Expression::Int(n))));
+named!(exp_dec_int(Span) -> Expression, map!(dec_int, |(pos, n)| Expression(pos, _Expression::Int(n))));
+
+named!(exp_num(Span) -> Expression, alt!(
+    exp_hex_int | exp_dec_int
+));
+
 // Expressions that do not contain other expressions.
 named!(exp_atomic(Span) -> Expression, alt!(
-    exp_nil | exp_bool | exp_id
+    exp_nil | exp_bool | exp_id | exp_num
 ));
 
 named!(exp_if(Span) -> Expression, do_parse!(
@@ -201,8 +237,7 @@ named!(exp_blocky(Span) -> Expression, alt!(
     exp_if | exp_while | exp_try
 ));
 
-named!(exp_fun(Span) -> Expression, do_parse!(
-    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+named!(fun(Span) -> (OuterArrayPattern, Vec<Statement>), do_parse!(
     args: alt!(
         do_parse!(
             pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
@@ -218,7 +253,13 @@ named!(exp_fun(Span) -> Expression, do_parse!(
     ) >>
     arrow >>
     body: block >>
-    (Expression(pos, _Expression::Fun(args, body)))
+    ((args, body))
+));
+
+named!(exp_fun(Span) -> Expression, do_parse!(
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+    the_fun: fun >>
+    (Expression(pos, _Expression::Fun(the_fun.0, the_fun.1)))
 ));
 
 named!(exp_array(Span) -> Expression, do_parse!(
@@ -300,7 +341,22 @@ named!(exp_binop_800(Span) -> Expression, do_parse!(expr: exp_binop_900 >> (expr
 
 // 700 is the precedence level
 // `+, -` (binary operators)
-named!(exp_binop_700(Span) -> Expression, do_parse!(expr: exp_binop_800 >> (expr)));
+named!(exp_binop_700(Span) -> Expression, do_parse!(
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+    first: exp_binop_800 >>
+    fold: fold_many0!(
+        do_parse!(
+            op: alt!(
+                value!(BinOp::Subtract, minus)
+            ) >>
+            expr: exp_binop_800 >>
+            (op, expr)
+        ),
+        first,
+        |acc, (op, rhs)| Expression(pos, _Expression::BinOp(Box::new(acc), op, Box::new(rhs)))
+    ) >>
+    (fold)
+));
 
 // 600 is the precedence level
 // `<<, >>`
@@ -432,13 +488,41 @@ named!(stmt_assign(Span) -> Statement, do_parse!(
     (Statement(pos, _Statement::Assign(the_id, expr)))
 ));
 
+named!(stmt_rec(Span) -> Statement, do_parse!(
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+    kw!("rec") >>
+    defs: alt!(
+        do_parse!(
+            the_id: id >>
+            assign >>
+            the_fun: fun >>
+            (vec![(the_id, the_fun.0, the_fun.1)])
+        ) |
+        delimited!(
+            lbrace,
+            separated_list!(
+                semi,
+                do_parse!(
+                    the_id: id >>
+                    assign >>
+                    the_fun: fun >>
+                    (the_id, the_fun.0, the_fun.1)
+                )
+            ),
+            rbrace
+        )
+    ) >>
+    (Statement(pos, _Statement::Rec(defs)))
+));
+
 named!(stmt(Span) -> Statement, alt!(
     stmt_assign |
     stmt_exp |
     stmt_return |
     stmt_break |
     stmt_throw |
-    stmt_let
+    stmt_let |
+    stmt_rec
 ));
 
 named!(stmts0(Span) -> Vec<Statement>, separated_list!(semi, stmt));

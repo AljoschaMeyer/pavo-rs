@@ -66,6 +66,7 @@ pub enum _Statement {
         rhs: Expression,
     },
     Assign(Id, Expression),
+    Rec(Vec<(Id, Vec<Statement>)>),
 }
 
 // Functions for generating ast nodes during desugaring. They have bogus source locations. The
@@ -136,6 +137,7 @@ impl From<PavoExpression> for Expression {
         Expression(exp.0, match exp.1 {
             _PavoExpression::Nil => _Expression::Nil,
             _PavoExpression::Bool(b) => _Expression::Bool(b),
+            _PavoExpression::Int(n) => _Expression::Int(n),
             _PavoExpression::Id(id) => _Expression::Id(id),
             _PavoExpression::If(cond, then_block, else_block) => _Expression::If(
                 cond.into(),
@@ -196,19 +198,17 @@ impl From<PavoExpression> for Expression {
                     lhs.into(),
                     rhs.into()
                 ),
+                BinOp::Subtract => _Expression::Builtin2(
+                    W(builtins::int_bin_minus),
+                    lhs.into(),
+                    rhs.into()
+                ),
             }
             _PavoExpression::Array(inners) => _Expression::BuiltinMany(
                 W(builtins::arr_new),
                 inners.into_iter().map(Into::into).collect()
             ),
-            _PavoExpression::Fun(args, body) => {
-                let mut stmts = vec![Statement::let_(Id::pat(0), false, Expression::args())];
-
-                do_desugar_binder_outer_array_pattern(args, &mut stmts, 0);
-                do_desugar_statements(body, &mut stmts);
-
-                _Expression::Fun(stmts)
-            }
+            _PavoExpression::Fun(args, body) => _Expression::Fun(desugar_fun(args, body)),
         })
     }
 }
@@ -217,6 +217,15 @@ impl From<Box<PavoExpression>> for Box<Expression> {
     fn from(stmt: Box<PavoExpression>) -> Self {
         Box::new((*stmt).into())
     }
+}
+
+fn desugar_fun(args: OuterArrayPattern, body: Vec<PavoStatement>) -> Vec<Statement> {
+    let mut stmts = vec![Statement::let_(Id::pat(0), false, Expression::args())];
+
+    do_desugar_binder_outer_array_pattern(args, &mut stmts, 0);
+    do_desugar_statements(body, &mut stmts);
+
+    stmts
 }
 
 pub fn desugar_statements(stmts: Vec<PavoStatement>) -> Vec<Statement> {
@@ -255,6 +264,14 @@ fn desugar_statement(stmt: PavoStatement, buf: &mut Vec<Statement>) {
         _PavoStatement::Assign(id, exp) => buf.push(Statement(
             stmt.0, _Statement::Assign(id, exp.into())
         )),
+        _PavoStatement::Rec(defs) => {
+            buf.push(Statement(
+                stmt.0,
+                _Statement::Rec(defs.into_iter().map(|(id, args, body)| {
+                    (id, desugar_fun(args, body))
+                }).collect())
+            ))
+        }
     }
 }
 

@@ -72,7 +72,7 @@ impl Default for Value {
 pub enum Fun {
     Builtin2(#[unsafe_ignore_trace] W<fn(&Value, &Value, &mut Context) -> PavoResult>),
     BuiltinMany(#[unsafe_ignore_trace] W<fn(&[Value], &mut Context) -> PavoResult>),
-    Closure(Gc<Closure>), // TODO manually impl PartialEq to go for GcEquality only
+    Closure(Gc<Closure>),
 }
 
 impl PartialEq for Fun {
@@ -81,7 +81,9 @@ impl PartialEq for Fun {
         match (self, other) {
             (Fun::Builtin2(a), Fun::Builtin2(b)) => a == b,
             (Fun::BuiltinMany(a), Fun::BuiltinMany(b)) => a == b,
-            (Fun::Closure(a), Fun::Closure(b)) => std::ptr::eq(a.deref(), b.deref()),
+            (Fun::Closure(a), Fun::Closure(b)) => {
+                std::ptr::eq(a.deref(), b.deref()) && a.entry == b.entry
+            }
             (Fun::Builtin2(..), _) => false,
             (Fun::BuiltinMany(..), _) => false,
             (Fun::Closure(..), _) => false,

@@ -22,6 +22,16 @@ pub fn eq(a: &Value, b: &Value, _: &mut Context) -> PavoResult {
     Ok(Value::new_bool(a == b))
 }
 
+pub fn int_bin_minus(a: &Value, b: &Value, _: &mut Context) -> PavoResult {
+    let a = as_int(a)?;
+    let b = as_int(b)?;
+
+    match a.checked_sub(b) {
+        Some(c) => Ok(Value::new_int(c)),
+        None => Err(Value::new_nil()), // XXX
+    }
+}
+
 pub fn arr_new(inners: &[Value], _: &mut Context) -> PavoResult {
     let mut v = Vector::new();
 

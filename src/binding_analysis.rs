@@ -169,7 +169,7 @@ pub enum _Expression {
     While(Box<Expression>, Vec<Statement>),
     Try(Vec<Statement>, Vec<Statement>, Vec<Statement>),
     Fun(Vec<Statement>),
-    Invocation(Box<Expression>, Vec<Expression>),
+    Invocation(Box<Expression>, Vec<Expression>, bool), // bool: true iff in tail position
     Builtin1(
         W<fn(&Value, &mut Context) -> PavoResult>,
         Box<Expression>
@@ -196,11 +196,12 @@ pub enum _Statement {
     Break(Expression),
     Throw(Expression),
     Assign(DeBruijn, Expression),
+    Rec(Vec<(DeBruijn, Vec<Statement>)>)
 }
 
 pub fn analyze_statements(ast: Vec<LightStatement>, top_level: &'static [&'static str]) -> Result<Vec<Statement>, AnalysisError> {
     let mut s = Stack::with_toplevel(top_level);
-    let ret = do_analyze_statements(ast, &mut s);
+    let ret = do_analyze_statements(ast, &mut s, true);
     if ret.is_ok() {
         debug_assert!(
             s.0.len() == 1, "Mismatched number of push and pops: Too few pops, stack: {:?}", s.0
@@ -209,44 +210,58 @@ pub fn analyze_statements(ast: Vec<LightStatement>, top_level: &'static [&'stati
     return ret;
 }
 
-fn do_analyze_statements(stmts: Vec<LightStatement>, s: &mut Stack) -> Result<Vec<Statement>, AnalysisError> {
+fn do_analyze_statements(stmts: Vec<LightStatement>, s: &mut Stack, tail: bool) -> Result<Vec<Statement>, AnalysisError> {
     s.push_scope();
 
-    let mut ret = Vec::with_capacity(stmts.len());
-    for stmt in stmts.into_iter() {
-        ret.push(do_analyze_statement(stmt, s)?);
+    let len = stmts.len();
+    let mut ret = Vec::with_capacity(len);
+    for (i, stmt) in stmts.into_iter().enumerate() {
+        ret.push(do_analyze_statement(stmt, s, tail && (i + 1 == len))?);
     }
 
     s.pop();
     return Ok(ret);
 }
 
-fn do_analyze_statement(stmt: LightStatement, s: &mut Stack) -> Result<Statement, AnalysisError> {
+fn do_analyze_statement(stmt: LightStatement, s: &mut Stack, tail: bool) -> Result<Statement, AnalysisError> {
     match stmt.1 {
         _LightStatement::Expression(exp) => Ok(Statement(
-            stmt.0, _Statement::Expression(do_analyze_exp(exp, s)?)
+            stmt.0, _Statement::Expression(do_analyze_exp(exp, s, tail)?)
         )),
         _LightStatement::Return(exp) => Ok(Statement(
-            stmt.0, _Statement::Return(do_analyze_exp(exp, s)?)
+            stmt.0, _Statement::Return(do_analyze_exp(exp, s, true)?)
         )),
         _LightStatement::Break(exp) => Ok(Statement(
-            stmt.0, _Statement::Break(do_analyze_exp(exp, s)?)
+            stmt.0, _Statement::Break(do_analyze_exp(exp, s, tail)?)
         )),
         _LightStatement::Throw(exp) => Ok(Statement(
-            stmt.0, _Statement::Throw(do_analyze_exp(exp, s)?)
+            stmt.0, _Statement::Throw(do_analyze_exp(exp, s, false)?)
         )),
         _LightStatement::Let { id, mutable, rhs } => {
             let binding_id = s.add_binding(&id.0, mutable);
-            Ok(Statement(stmt.0, _Statement::Assign(DeBruijn { up: 0, id: binding_id}, do_analyze_exp(rhs, s)?)))
+            Ok(Statement(stmt.0, _Statement::Assign(DeBruijn { up: 0, id: binding_id}, do_analyze_exp(rhs, s, false)?)))
         },
         _LightStatement::Assign(id, rhs) => {
             let binding_id = s.resolve_binding(&id, true)?;
-            Ok(Statement(stmt.0, _Statement::Assign(binding_id, do_analyze_exp(rhs, s)?)))
+            Ok(Statement(stmt.0, _Statement::Assign(binding_id, do_analyze_exp(rhs, s, false)?)))
         },
+        _LightStatement::Rec(defs) => {
+            let mut defs2 = Vec::with_capacity(defs.len());
+            let defs1: Vec<_> = defs.into_iter()
+                .map(|(id, body)| (DeBruijn { up:0, id: s.add_binding(&id.0, false) }, body))
+                .collect();
+
+            for (de_bruijn, body) in defs1.into_iter() {
+                s.push_env();
+                defs2.push((de_bruijn, do_analyze_statements(body, s, true)?));
+            }
+
+            Ok(Statement(stmt.0, _Statement::Rec(defs2)))
+        }
     }
 }
 
-fn do_analyze_exp(exp: LightExpression, s: &mut Stack) -> Result<Expression, AnalysisError> {
+fn do_analyze_exp(exp: LightExpression, s: &mut Stack, tail: bool) -> Result<Expression, AnalysisError> {
     match exp.1 {
         _LightExpression::Nil => Ok(Expression(exp.0, _Expression::Nil)),
         _LightExpression::Bool(b) => Ok(Expression(exp.0, _Expression::Bool(b))),
@@ -256,71 +271,72 @@ fn do_analyze_exp(exp: LightExpression, s: &mut Stack) -> Result<Expression, Ana
         }
         _LightExpression::If(cond, then_block, else_block) => {
             Ok(Expression(exp.0, _Expression::If(
-                do_analyze_exp_box(cond, s)?,
-                do_analyze_statements(then_block, s)?,
-                do_analyze_statements(else_block, s)?
+                do_analyze_exp_box(cond, s, false)?,
+                do_analyze_statements(then_block, s, tail)?,
+                do_analyze_statements(else_block, s, tail)?
             )))
         }
         _LightExpression::While(cond, body) => {
             Ok(Expression(exp.0, _Expression::While(
-                do_analyze_exp_box(cond, s)?,
-                do_analyze_statements(body, s)?
+                do_analyze_exp_box(cond, s, false)?,
+                do_analyze_statements(body, s, false)?
             )))
         }
         _LightExpression::Try(try_block, caught_block, finally_block) => {
-            let ret_try_block = do_analyze_statements(try_block, s)?;
+            let ret_try_block = do_analyze_statements(try_block, s, false)?;
             Ok(Expression(exp.0, _Expression::Try(
                 ret_try_block,
-                do_analyze_statements(caught_block, s)?,
-                do_analyze_statements(finally_block, s)?
+                do_analyze_statements(caught_block, s, false)?,
+                do_analyze_statements(finally_block, s, tail)?
             )))
         }
         _LightExpression::Thrown => Ok(Expression(exp.0, _Expression::NoOp)),
         _LightExpression::Args => Ok(Expression(exp.0, _Expression::NoOp)),
         _LightExpression::Invocation(fun, args) => {
             Ok(Expression(exp.0, _Expression::Invocation(
-                do_analyze_exp_box(fun, s)?,
-                do_analyze_exps(args, s)?
+                do_analyze_exp_box(fun, s, false)?,
+                do_analyze_exps(args, s, false)?,
+                tail
             )))
         }
         _LightExpression::Fun(body) => {
             s.push_env();
-            let ret = Ok(Expression(exp.0, _Expression::Fun(
-                do_analyze_statements(body, s)?,
-            )));
-            ret
+            Ok(Expression(exp.0, _Expression::Fun(
+                do_analyze_statements(body, s, true)?,
+            )))
         }
         _LightExpression::Builtin1(fun, arg) => {
             Ok(Expression(exp.0, _Expression::Builtin1(
                 fun,
-                do_analyze_exp_box(arg, s)?
+                do_analyze_exp_box(arg, s, false)?
             )))
         }
         _LightExpression::Builtin2(fun, lhs, rhs) => {
             Ok(Expression(exp.0, _Expression::Builtin2(
                 fun,
-                do_analyze_exp_box(lhs, s)?,
-                do_analyze_exp_box(rhs, s)?
+                do_analyze_exp_box(lhs, s, false)?,
+                do_analyze_exp_box(rhs, s, false)?
             )))
         }
         _LightExpression::BuiltinMany(fun, args) => {
             Ok(Expression(exp.0, _Expression::BuiltinMany(
                 fun,
-                do_analyze_exps(args, s)?
+                do_analyze_exps(args, s, false)?
             )))
         }
     }
 }
 
-fn do_analyze_exp_box(exp: Box<LightExpression>, s: &mut Stack) -> Result<Box<Expression>, AnalysisError> {
-    Ok(Box::new(do_analyze_exp(*exp, s)?))
+fn do_analyze_exp_box(exp: Box<LightExpression>, s: &mut Stack, tail: bool) -> Result<Box<Expression>, AnalysisError> {
+    Ok(Box::new(do_analyze_exp(*exp, s, tail)?))
 }
 
-fn do_analyze_exps(exps: Vec<LightExpression>, s: &mut Stack) -> Result<Vec<Expression>, AnalysisError> {
-    let mut ret = Vec::with_capacity(exps.len());
+fn do_analyze_exps(exps: Vec<LightExpression>, s: &mut Stack, tail: bool) -> Result<Vec<Expression>, AnalysisError> {
+    let len = exps.len();
+    let mut ret = Vec::with_capacity(len);
 
-    for exp in exps.into_iter() {
-        ret.push(do_analyze_exp(exp, s)?);
+    for (i, exp) in exps.into_iter().enumerate() {
+        ret.push(do_analyze_exp(exp, s, tail && (i + 1 == len))?);
     }
 
     return Ok(ret);

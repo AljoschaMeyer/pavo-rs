@@ -29,6 +29,7 @@ pub struct Expression(pub SrcLocation, pub _Expression);
 pub enum _Expression {
     Nil,
     Bool(bool),
+    Int(i64),
     Id(Id),
     If(Box<Expression>, Vec<Statement>, Vec<Statement>),
     Land(Box<Expression>, Box<Expression>),
@@ -45,7 +46,7 @@ pub enum _Expression {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinOp {
-    Eq
+    Eq, Subtract
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +60,7 @@ pub enum _Statement {
     Throw(Expression),
     Let(BinderPattern, Expression),
     Assign(Id, Expression),
+    Rec(Vec<(Id, OuterArrayPattern, Vec<Statement>)>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

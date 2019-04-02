@@ -8,6 +8,7 @@ Pavo is dynamically typed. Variables bindings don't have statically known types,
 
 - `nil`: The unit type.
 - `bool`: Either `true` or `false`.
+- `int`: An integer between `- 2^63` and `2^63 - 1`.
 - `array`: An ordered sequence of values.
 - `function`: A function, or strictly speaking a closure.
 
@@ -18,6 +19,12 @@ The `nil` type only holds a single value: `nil` (which is also the literal of th
 ### Bool
 
 The `bool` type holds two values: `true` and `false` (which are also the literals of the values).
+
+### Int
+
+Integers are 64 bit signed integers, capable of representing all values between `- 2^63` and `2^63 - 1` (inclusive). Integer literals can be written in two forms: Either as a sequence of decimal digits, or as the prefix `0x` followed by a sequence of hexadecimal digits (both lower case and upper case letters are fine).
+
+Integer literals are always positive, negative integers can be created with the unary `-` operator. Integer literals must be less than or equal to `2^63 - 1`, any greater (i.e. overflowing) literal is a syntax error. In particular, this means that the smallest possible integer (`−9223372036854775808`) can not be written this way as the (positive) literal is `2^63` and thus overflows. You can use the `TODO` toplevel value instead.
 
 ### Arrays
 
@@ -71,18 +78,6 @@ let mut c = false;
 }() && c # evaluates to true
 ```
 
-## Other Toplevel Values
-
-Toplevel values (mostly functions) that are not explicitly tied to any one type. Sorted into some rough categories.
-
-### Equality and Ordering
-
-TODO words (blocked on: will floats include NaN?, is ordering on ref types deterministic?)
-
-#### `eq(a, b)`
-
-Returns `true` iff `a == b`.
-
 ## Syntax and Semantics
 
 Pavo is an imperative language with C-like syntax. *Expressions* are evaluated to values, and *statements* are executed in sequence to perform actions depending on those values. Statements also evaluate to values, those statements that are executed purely for side-effects evaluate to `nil`. A piece of pavo source code is called a *script*. Each script consists of any number of statements, separated by semicolons. Any semicolon-separated sequence of statements evaluates to the value to which the last of those statements evaluated. The empty sequence of statements evaluates to `nil`.
@@ -129,7 +124,45 @@ The syntax for assignment is `some_identifier = some_expression`. The identifier
 
 #### Let
 
-The syntax for let statements is `let some_binder_pattern = some_expression`. The let statement evalutes the expression and then binds the identifiers in the binder pattern (see next section) according to the resulting value. The statement itself evaluates to `nil`.
+The syntax for let statements is `let some_binder_pattern = some_expression`. The let statement evaluates the expression and then binds the identifiers in the binder pattern according to the resulting value. The statement itself evaluates to `nil`.
+
+#### Rec
+
+Let statements are not suitable for defining recursive functions. For those, use the `rec` statement, whose syntax is either `rec some_id = (some_args) -> {}` for a single recursive function, or `rec { first_id = (first_args) -> {}; second_id = (second_args) -> {}; ...}` for mutually recursive functions. Unlike a `let` binding, the identifiers of the functions are bound inside the function bodies. The statement itself evaluates to `nil`.
+
+Pavo has (mutually recursive) tail-call optimization, so the following examples work just fine (as opposed to overflowing the call stack in a language without tco):
+
+```pavo
+rec check_positive = (n) -> {
+    if n == 0 {
+        true
+    } else {
+        check_positive(n - 1)
+    }
+};
+check_positive(49999) # true
+```
+
+```pavo
+rec {
+    check_even = (n) -> {
+        if n == 0 {
+            true
+        } else {
+            check_odd(n - 1)
+        }
+    };
+
+    check_odd = (n) -> {
+        if n == 0 {
+            false
+        } else {
+            check_even(n - 1)
+        }
+    }
+};
+check_odd(49999) && check_even(50000) # true
+```
 
 ### Binder Patterns
 
@@ -356,3 +389,17 @@ if a {
   }
 }
 ```
+
+## Toplevel Values
+
+### Other Toplevel Values
+
+Toplevel values (mostly functions) that are not explicitly tied to any one type. Sorted into some rough categories.
+
+#### Equality and Ordering
+
+TODO words (blocked on: will floats include NaN?, is ordering on ref types deterministic?)
+
+##### `eq(a, b)`
+
+Returns `true` iff `a == b`.
