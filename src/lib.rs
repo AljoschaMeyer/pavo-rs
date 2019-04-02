@@ -115,7 +115,6 @@ mod tests {
         assert_pavo_ok("false && true", Value::new_bool(false));
         assert_pavo_ok("false && false", Value::new_bool(false));
 
-        // `&&` has higher precedence than `||`
         assert_pavo_ok("false && false || true", Value::new_bool(true));
         assert_pavo_ok("(false && false) || true", Value::new_bool(true));
         assert_pavo_ok("false && (false || true)", Value::new_bool(false));

@@ -400,21 +400,22 @@ named!(exp_binop_200(Span) -> Expression, do_parse!(
 ));
 
 // 100 is the precedence level
-// `&&`
-named!(exp_binop_100(Span) -> Expression, do_parse!(
-    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
-    first: exp_binop_200 >>
-    fold: fold_many0!(
-        do_parse!(
-            land >>
-            expr: exp_binop_200 >>
-            (expr)
-        ),
-        first,
-        |acc, item| Expression(pos, _Expression::Land(Box::new(acc), Box::new(item)))
-    ) >>
-    (fold)
-));
+// TODO remove this
+named!(exp_binop_100(Span) -> Expression, do_parse!(expr: exp_binop_200 >> (expr)));
+// named!(exp_binop_100(Span) -> Expression, do_parse!(
+//     pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+//     first: exp_binop_200 >>
+//     fold: fold_many0!(
+//         do_parse!(
+//             land >>
+//             expr: exp_binop_200 >>
+//             (expr)
+//         ),
+//         first,
+//         |acc, item| Expression(pos, _Expression::Land(Box::new(acc), Box::new(item)))
+//     ) >>
+//     (fold)
+// ));
 
 named!(non_leftrecursive_exp(Span) -> Expression, alt!(
     exp_fun |
@@ -440,15 +441,22 @@ named!(exp(Span) -> Expression, do_parse!(
     first: exp_binop_100 >>
     fold: fold_many0!(
         do_parse!(
-            lor >>
+            op: alt!(value!(BoolBinOp::And, land) | value!(BoolBinOp::Or, lor)) >>
             expr: exp_binop_100 >>
-            (expr)
+            ((expr, op))
         ),
         first,
-        |acc, item| Expression(pos, _Expression::Lor(Box::new(acc), Box::new(item)))
+        |acc, (rhs, op)| Expression(pos, match op {
+            BoolBinOp::And => _Expression::Land(Box::new(acc), Box::new(rhs)),
+            BoolBinOp::Or => _Expression::Lor(Box::new(acc), Box::new(rhs)),
+        })
     ) >>
     (fold)
 ));
+
+enum BoolBinOp {
+    And, Or
+}
 
 named!(stmt_exp(Span) -> Statement, do_parse!(
     expr: exp >>

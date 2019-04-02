@@ -323,16 +323,15 @@ try {
 
 #### Operators
 
-All operators in pavo are left-associative. The list of operator precendeces, from higher to lower precedence:
+All operators in pavo are left-associative. The list of operator precendeces, from higher to lower precedence (operators in the same row have equal precedence):
 
 - function invocation (`fun(args)`)
 - "method" syntax (`arg1::fun_id(args)`)
 - `?`
 - `==`
-- `&&`
-- `||`
+- `&&`, `||`
 
-For example, `a || b && c` is parsed as `a || (b && c)` (`&&` has higher precedence than `||`), whereas `a || b || c` is parsed as `(a || b) || c` (equal precedence, so it defaults to left-associativity).
+For example, `a || b == c` is parsed as `a || (b == c)` (`==` has higher precedence than `||`), whereas `a || b && c` is parsed as `(a || b) && c` (equal precedence, so it defaults to left-associativity).
 
 ##### Function Invocation
 
