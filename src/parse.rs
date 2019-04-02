@@ -7,8 +7,8 @@ use nom::{
     {line_ending, not_line_ending, multispace1, eof},
     {value, tag, take_while1, one_of, is_a},
     {do_parse, alt, many0, many1, opt, fold_many0, many_m_n},
-    {delimited, separated_list, separated_nonempty_list},
-    {named, not, map, try_parse},
+    {delimited, separated_nonempty_list as nom_sep_nonempty_list, separated_list as nom_sep_list},
+    {named, not, map, try_parse, call},
     types::CompleteStr, IResult, Err, Context, ErrorKind,
 };
 use nom_locate::{LocatedSpan, position};
@@ -24,6 +24,48 @@ use crate::syntax::{
 use crate::util::SrcLocation;
 
 type Span<'a> = LocatedSpan<CompleteStr<'a>>;
+
+// Same as separated_list, but allows a trailing separator.
+macro_rules! separated_list_trail(
+    ($i:expr, $sep:ident!( $($args:tt)* ), $submac:ident!( $($args2:tt)* )) => ({
+        do_parse!(
+            $i,
+            ret: nom_sep_list!($sep!($($args)*), $submac!($($args2)*)) >>
+            opt!($sep!($($args)*)) >>
+            (ret)
+        )
+    });
+    ($i:expr, $submac:ident!( $($args:tt)* ), $g:expr) => (
+        separated_list_trail!($i, $submac!($($args)*), call!($g));
+    );
+    ($i:expr, $f:expr, $submac:ident!( $($args:tt)* )) => (
+        separated_list_trail!($i, call!($f), $submac!($($args)*));
+    );
+    ($i:expr, $f:expr, $g:expr) => (
+        separated_list_trail!($i, call!($f), call!($g));
+    );
+);
+
+// Same as separated_nonempty_list, but allows a trailing separator.
+macro_rules! separated_nonempty_list_trail(
+    ($i:expr, $sep:ident!( $($args:tt)* ), $submac:ident!( $($args2:tt)* )) => ({
+        do_parse!(
+            $i,
+            ret: nom_sep_nonempty_list!($sep!($($args)*), $submac!($($args2)*)) >>
+            opt!($sep!($($args)*)) >>
+            (ret)
+        )
+    });
+    ($i:expr, $submac:ident!( $($args:tt)* ), $g:expr) => (
+        separated_separated_nonempty_list_trail!($i, $submac!($($args)*), call!($g));
+    );
+    ($i:expr, $f:expr, $submac:ident!( $($args:tt)* )) => (
+        separated_nonempty_list_trail!($i, call!($f), $submac!($($args)*));
+    );
+    ($i:expr, $f:expr, $g:expr) => (
+        separated_nonempty_list_trail!($i, call!($f), call!($g));
+    );
+);
 
 named!(linecomment(Span) -> (), do_parse!(
     tag!("#") >>
@@ -272,7 +314,7 @@ named!(exp_array(Span) -> Expression, do_parse!(
     pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     arr: delimited!(
         lbracket,
-        separated_list!(comma, exp),
+        separated_list_trail!(comma, exp),
         rbracket
     ) >>
     (Expression(pos, _Expression::Array(arr)))
@@ -290,7 +332,7 @@ named!(exp_binop_1200(Span) -> Expression, do_parse!(
     fold: fold_many0!(
         delimited!(
             lparen,
-            separated_list!(comma, exp),
+            separated_list_trail!(comma, exp),
             rparen
         ),
         first,
@@ -310,7 +352,7 @@ named!(exp_binop_1100(Span) -> Expression, do_parse!(
             ident: id >>
             args: delimited!(
                 lparen,
-                separated_list!(comma, exp),
+                separated_list_trail!(comma, exp),
                 rparen
             ) >>
             ((ident, args))
@@ -500,7 +542,7 @@ named!(stmt_rec(Span) -> Statement, do_parse!(
         ) |
         delimited!(
             lbrace,
-            separated_list!(
+            separated_list_trail!(
                 semi,
                 do_parse!(
                     the_id: id >>
@@ -525,7 +567,7 @@ named!(stmt(Span) -> Statement, alt!(
     stmt_rec
 ));
 
-named!(stmts0(Span) -> Vec<Statement>, separated_list!(semi, stmt));
+named!(stmts0(Span) -> Vec<Statement>, separated_list_trail!(semi, stmt));
 
 named!(block(Span) -> Vec<Statement>, delimited!(lbrace, stmts0, rbrace));
 
@@ -573,14 +615,14 @@ named!(outer_array_inners(Span) -> OuterArrayPattern, alt!(
     ) |
     do_parse!(
        pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
-       inners: separated_nonempty_list!(comma, do_parse!(
+       inners: separated_nonempty_list_trail!(comma, do_parse!(
            p: array_pattern >>
            not!(dots) >>
            (p)
        )) >>
        remaining: opt!(do_parse!(
-           comma >>
            remaining: array_pattern_remaining >>
+           opt!(comma) >>
            (remaining)
        )) >>
        (OuterArrayPattern(pos, outer_array_pattern(inners, remaining)))

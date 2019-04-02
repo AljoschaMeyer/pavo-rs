@@ -85,13 +85,14 @@ mod tests {
         assert_pavo_ok("# com#ment\n nil #this comment ends with eof", Value::new_nil());
         assert_pavo_ok("nil#", Value::new_nil());
         assert_pavo_ok("", Value::new_nil());
+        assert_pavo_ok(";", Value::new_nil());
     }
 
     #[test]
     fn test_bools() {
         assert_pavo_ok("true", Value::new_bool(true));
         assert_pavo_ok("false", Value::new_bool(false));
-        assert_pavo_ok("true; false", Value::new_bool(false));
+        assert_pavo_ok("true; false;", Value::new_bool(false));
     }
 
     #[test]
@@ -214,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_invocation() {
-        assert_pavo_thrown("false(true, nil, false)", Value::new_nil());
+        assert_pavo_thrown("false(true, nil, false,)", Value::new_nil());
         assert_pavo_thrown("false()", Value::new_nil());
     }
 
@@ -254,11 +255,11 @@ mod tests {
         assert_pavo_ok("let [a] = [true]; a", Value::new_bool(true));
         assert_pavo_ok("let [a, b?] = [true]; a", Value::new_bool(true));
         assert_pavo_ok("let [a, b?] = [true, false]; b", Value::new_bool(false));
-        assert_pavo_ok("let [a, b?] = [true]; b", Value::new_nil());
-        assert_pavo_ok("let [a, mut b?] = [true]; b = a; b", Value::new_bool(true));
-        assert_pavo_ok("let [a, ...] = [true]; a", Value::new_bool(true));
+        assert_pavo_ok("let [a, b?,] = [true]; b", Value::new_nil());
+        assert_pavo_ok("let [a, mut b?,] = [true]; b = a; b", Value::new_bool(true));
+        assert_pavo_ok("let [a, ...,] = [true]; a", Value::new_bool(true));
         assert_pavo_ok("let [a, ...] = [true, nil, nil]; a", Value::new_bool(true));
-        assert_pavo_ok("let [a, b...] = [false]; b == []", Value::new_bool(true));
+        assert_pavo_ok("let [a, b...,] = [false]; b == []", Value::new_bool(true));
         assert_pavo_ok("let [a, b...] = [false, false]; b == [false]", Value::new_bool(true));
         assert_pavo_ok("let [a, b...] = [false, false, false]; b == [false, false]", Value::new_bool(true));
         assert_pavo_ok("let [a, mut b...] = [false]; b = b == []; b", Value::new_bool(true));
@@ -269,7 +270,7 @@ mod tests {
 
         assert_pavo_thrown("let [] = false", Value::new_nil());
         assert_pavo_thrown("let [] = [false]", Value::new_nil());
-        assert_pavo_thrown("let [a] = [false, false]", Value::new_nil());
+        assert_pavo_thrown("let [a,] = [false, false]", Value::new_nil());
         assert_pavo_thrown("let [...] = false", Value::new_nil());
         assert_pavo_thrown("let [a...] = false", Value::new_nil());
         assert_pavo_thrown("let [a, b, c...] = [false]", Value::new_nil());
