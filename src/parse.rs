@@ -17,6 +17,7 @@ use crate::syntax::{
     Id,
     Expression, _Expression, BinOp,
     Statement, _Statement,
+    BinderPatterns,
     BinderPattern, _BinderPattern,
     OuterArrayPattern, _OuterArrayPattern,
     ArrayPattern, _ArrayPattern,
@@ -121,6 +122,7 @@ named!(coloncolon(Span) -> (), do_parse!(tag!("::") >> ws0 >> (())));
 named!(eq(Span) -> (), do_parse!(tag!("==") >> ws0 >> (())));
 named!(dots(Span) -> (), do_parse!(tag!("...") >> ws0 >> (())));
 named!(arrow(Span) -> (), do_parse!(tag!("->") >> ws0 >> (())));
+named!(pipe(Span) -> (), do_parse!(tag!("|") >> ws0 >> (())));
 named!(minus(Span) -> (), do_parse!(tag!("-") >> not!(tag!(">")) >> ws0 >> (())));
 
 fn is_id_char(c: char) -> bool {
@@ -267,7 +269,7 @@ named!(exp_try(Span) -> Expression, do_parse!(
     kw!("try") >>
     try_block: block >>
     kw!("catch") >>
-    pat: binder_pat >>
+    pats: binder_pats >>
     catch_block: block >>
     finally_block: map!(
         opt!(do_parse!(
@@ -277,7 +279,7 @@ named!(exp_try(Span) -> Expression, do_parse!(
         )),
         |blck| blck.unwrap_or(vec![])
     ) >>
-    (Expression(pos, _Expression::Try(try_block, pat, catch_block, finally_block)))
+    (Expression(pos, _Expression::Try(try_block, pats, catch_block, finally_block)))
 ));
 
 // Expressions that can follow an `else` keyword without being enclosed in braces.
@@ -320,15 +322,42 @@ named!(exp_array(Span) -> Expression, do_parse!(
     (Expression(pos, _Expression::Array(arr)))
 ));
 
+// TODO add index and field access here (which needs left-associative precedence parsing)
+named!(method_exp(Span) -> Expression, alt!(
+    exp_id
+));
+
 // 1300 is the precedence level
 // `field access`
 named!(exp_binop_1300(Span) -> Expression, do_parse!(expr: non_leftrecursive_exp >> (expr)));
 
 // 1200 is the precedence level
-// `call, index`
+// `::`
 named!(exp_binop_1200(Span) -> Expression, do_parse!(
     pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     first: exp_binop_1300 >>
+    fold: fold_many0!(
+        do_parse!(
+            coloncolon >>
+            method: method_exp >>
+            args: delimited!(
+                lparen,
+                separated_list_trail!(comma, exp),
+                rparen
+            ) >>
+            ((method, args))
+        ),
+        first,
+        |acc, (method, args)| Expression(pos, _Expression::Method(Box::new(acc), Box::new(method), args))
+    ) >>
+    (fold)
+));
+
+// 1100 is the precedence level
+// `call, index`
+named!(exp_binop_1100(Span) -> Expression, do_parse!(
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+    first: exp_binop_1200 >>
     fold: fold_many0!(
         delimited!(
             lparen,
@@ -337,28 +366,6 @@ named!(exp_binop_1200(Span) -> Expression, do_parse!(
         ),
         first,
         |acc, args| Expression(pos, _Expression::Invocation(Box::new(acc), args))
-    ) >>
-    (fold)
-));
-
-// 1100 is the precedence level
-// `::`
-named!(exp_binop_1100(Span) -> Expression, do_parse!(
-    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
-    first: exp_binop_1200 >>
-    fold: fold_many0!(
-        do_parse!(
-            coloncolon >>
-            ident: id >>
-            args: delimited!(
-                lparen,
-                separated_list_trail!(comma, exp),
-                rparen
-            ) >>
-            ((ident, args))
-        ),
-        first,
-        |acc, (ident, args)| Expression(pos, _Expression::Method(Box::new(acc), ident, args))
     ) >>
     (fold)
 ));
@@ -411,7 +418,7 @@ named!(exp_binop_700(Span) -> Expression, do_parse!(
 named!(exp_binop_600(Span) -> Expression, do_parse!(expr: exp_binop_700 >> (expr)));
 
 // 500 is the precedence level
-// `&`
+// `&` TODO collapes &, ^ and | into one precedence level
 named!(exp_binop_500(Span) -> Expression, do_parse!(expr: exp_binop_600 >> (expr)));
 
 // 400 is the precedence level
@@ -515,10 +522,10 @@ named!(stmt_throw(Span) -> Statement, do_parse!(
 named!(stmt_let(Span) -> Statement, do_parse!(
     pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     kw!("let") >>
-    pat: binder_pat >>
+    pats: binder_pats >>
     assign >>
     expr: exp >>
-    (Statement(pos, _Statement::Let(pat, expr)))
+    (Statement(pos, _Statement::Let(pats, expr)))
 ));
 
 named!(stmt_assign(Span) -> Statement, do_parse!(
@@ -668,6 +675,17 @@ named!(binder_pat(Span) -> BinderPattern, alt!(
     binder_id |
     binder_blank |
     binder_outer_array
+));
+
+named!(binder_pats(Span) -> BinderPatterns, do_parse!(
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+    pats: separated_nonempty_list_trail!(pipe, binder_pat) >>
+    guard: opt!(do_parse!(
+        kw!("if") >>
+        expr: exp >>
+        (expr)
+    )) >>
+    (BinderPatterns(pos, pats, guard.map(Box::new)))
 ));
 
 named!(p_script(Span) -> Vec<Statement>, do_parse!(

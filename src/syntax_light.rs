@@ -3,6 +3,8 @@
 //! Regular syntax is translated into this directly after parsing. The remaining layers of the
 //! program are only aware of this more manageable pavo subset.
 
+use failure_derive::Fail;
+
 use crate::syntax::{
     Id,
     Statement as PavoStatement,
@@ -10,6 +12,7 @@ use crate::syntax::{
     Expression as PavoExpression,
     _Expression as _PavoExpression,
     BinOp,
+    BinderPatterns,
     BinderPattern,
     _BinderPattern,
     OuterArrayPattern, _OuterArrayPattern,
@@ -19,6 +22,21 @@ use crate::builtins;
 use crate::util::{FnWrap as W, SrcLocation};
 use crate::value::Value;
 use crate::context::{Context, PavoResult};
+
+/// Everything that can go wrong when desugaring patterns.
+#[derive(PartialEq, Eq, Debug, Clone, Hash, Fail)]
+pub enum PatternError {
+    #[fail(display = "encountered a duplicate identifier")]
+    Duplicate(Id),
+    #[fail(display = "a binding is missing in one of the variants of a pattern (or it might be mutable in some and immutable in other variants)")]
+    Missing(SrcLocation),
+}
+
+impl From<Id> for PatternError {
+    fn from(id: Id) -> Self {
+        PatternError::Duplicate(id)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expression(pub SrcLocation, pub _Expression);
@@ -73,6 +91,13 @@ pub enum _Statement {
 // `&'a str` arguments are an easy way to handle the lifetime requirements, they can be empty.
 
 impl Expression {
+    fn nil() -> Expression {
+        Expression(
+            SrcLocation::default(),
+            _Expression::Nil
+        )
+    }
+
     fn bool_(b: bool) -> Expression {
         Expression(
             SrcLocation::default(),
@@ -130,178 +155,281 @@ impl Statement {
             _Statement::Let { id, mutable, rhs }
         )
     }
+
+    fn throw_(e: Expression) -> Statement {
+        Statement(
+            SrcLocation::default(),
+            _Statement::Throw(e),
+        )
+    }
 }
 
-impl From<PavoExpression> for Expression {
-    fn from(exp: PavoExpression) -> Expression {
-        Expression(exp.0, match exp.1 {
-            _PavoExpression::Nil => _Expression::Nil,
-            _PavoExpression::Bool(b) => _Expression::Bool(b),
-            _PavoExpression::Int(n) => _Expression::Int(n),
-            _PavoExpression::Id(id) => _Expression::Id(id),
-            _PavoExpression::If(cond, then_block, else_block) => _Expression::If(
-                cond.into(),
-                desugar_statements(then_block),
-                desugar_statements(else_block),
-            ),
-            _PavoExpression::Land(lhs, rhs) => _Expression::If(
-                lhs.into(),
-                vec![Statement::exp(Expression::if_(
-                    rhs.into(),
-                    vec![Statement::exp(Expression::bool_(true))],
-                    vec![Statement::exp(Expression::bool_(false))]
-                ))],
-                vec![Statement::exp(Expression::bool_(false))],
-            ),
-            _PavoExpression::Lor(lhs, rhs) => _Expression::If(
-                lhs.into(),
+fn desugar_exp(exp: PavoExpression) -> Result<Expression, PatternError> {
+    Ok(Expression(exp.0, match exp.1 {
+        _PavoExpression::Nil => _Expression::Nil,
+        _PavoExpression::Bool(b) => _Expression::Bool(b),
+        _PavoExpression::Int(n) => _Expression::Int(n),
+        _PavoExpression::Id(id) => _Expression::Id(id),
+        _PavoExpression::If(cond, then_block, else_block) => _Expression::If(
+            Box::new(desugar_exp(*cond)?),
+            desugar_statements(then_block)?,
+            desugar_statements(else_block)?,
+        ),
+        _PavoExpression::Land(lhs, rhs) => _Expression::If(
+            Box::new(desugar_exp(*lhs)?),
+            vec![Statement::exp(Expression::if_(
+                Box::new(desugar_exp(*rhs)?),
                 vec![Statement::exp(Expression::bool_(true))],
-                vec![Statement::exp(Expression::if_(
-                    rhs.into(),
-                    vec![Statement::exp(Expression::bool_(true))],
-                    vec![Statement::exp(Expression::bool_(false))]
-                ))],
-            ),
-            _PavoExpression::While(cond, body) => _Expression::While(
-                cond.into(),
-                desugar_statements(body),
-            ),
-            _PavoExpression::Try(try_block, binder, caught_block, finally_block) => {
-                let mut caught_buf = vec![Statement::let_(Id::pat(0), false, Expression::thrown())];
-                desugar_binder_pattern(binder, &mut caught_buf);
-                do_desugar_statements(caught_block, &mut caught_buf);
-                _Expression::Try(
-                    desugar_statements(try_block),
-                    caught_buf,
-                    desugar_statements(finally_block)
-                )
-            },
-            _PavoExpression::QM(inner) => Self::from(PavoExpression::try_(
-                vec![PavoStatement::exp((*inner).into())],
-                BinderPattern::blank(),
-                vec![PavoStatement::exp(PavoExpression::nil())],
-                vec![]
-            )).1,
-            _PavoExpression::Invocation(fun, args) => _Expression::Invocation(
-                fun.into(),
-                args.into_iter().map(Into::into).collect()
-            ),
-            _PavoExpression::Method(first_arg, fun_id, remaining_args) => _Expression::Invocation(
-                Box::new(Expression::id(fun_id)),
-                std::iter::once((*first_arg).into())
-                    .chain(remaining_args.into_iter().map(Into::into))
-                    .collect()
-            ),
-            _PavoExpression::BinOp(lhs, op, rhs) => match op {
-                BinOp::Eq => _Expression::Builtin2(
-                    W(builtins::eq),
-                    lhs.into(),
-                    rhs.into()
-                ),
-                BinOp::Subtract => _Expression::Builtin2(
-                    W(builtins::int_bin_minus),
-                    lhs.into(),
-                    rhs.into()
-                ),
+                vec![Statement::exp(Expression::bool_(false))]
+            ))],
+            vec![Statement::exp(Expression::bool_(false))],
+        ),
+        _PavoExpression::Lor(lhs, rhs) => _Expression::If(
+            Box::new(desugar_exp(*lhs)?),
+            vec![Statement::exp(Expression::bool_(true))],
+            vec![Statement::exp(Expression::if_(
+                Box::new(desugar_exp(*rhs)?),
+                vec![Statement::exp(Expression::bool_(true))],
+                vec![Statement::exp(Expression::bool_(false))]
+            ))],
+        ),
+        _PavoExpression::While(cond, body) => _Expression::While(
+            Box::new(desugar_exp(*cond)?),
+            desugar_statements(body)?,
+        ),
+        _PavoExpression::Try(try_block, binder, caught_block, finally_block) => {
+            let mut caught_buf = vec![Statement::let_(Id::caught(), false, Expression::thrown())];
+            desugar_binder_patterns(binder, &mut caught_buf, true)?;
+            do_desugar_statements(caught_block, &mut caught_buf)?;
+            _Expression::Try(
+                desugar_statements(try_block)?,
+                caught_buf,
+                desugar_statements(finally_block)?
+            )
+        },
+        _PavoExpression::QM(inner) => desugar_exp(PavoExpression::try_(
+            vec![PavoStatement::exp((*inner).into())],
+            BinderPatterns::blank(),
+            vec![PavoStatement::exp(PavoExpression::nil())],
+            vec![]
+        ))?.1,
+        _PavoExpression::Invocation(fun, args) => {
+            let mut desugared_args = Vec::with_capacity(args.len());
+
+            for arg in args.into_iter() {
+                desugared_args.push(desugar_exp(arg)?);
             }
-            _PavoExpression::Array(inners) => _Expression::BuiltinMany(
-                W(builtins::arr_new),
-                inners.into_iter().map(Into::into).collect()
+
+            _Expression::Invocation(
+                Box::new(desugar_exp(*fun)?),
+                desugared_args
+            )
+        }
+        _PavoExpression::Method(first_arg, method_exp, remaining_args) => {
+            let mut desugared_args = Vec::with_capacity(1 + remaining_args.len());
+            desugared_args.push(desugar_exp(*first_arg)?);
+
+            for arg in remaining_args.into_iter() {
+                desugared_args.push(desugar_exp(arg)?);
+            }
+
+            _Expression::Invocation(
+                Box::new(desugar_exp(*method_exp)?),
+                desugared_args
+            )
+        }
+        _PavoExpression::BinOp(lhs, op, rhs) => match op {
+            BinOp::Eq => _Expression::Builtin2(
+                W(builtins::eq),
+                Box::new(desugar_exp(*lhs)?),
+                Box::new(desugar_exp(*rhs)?),
             ),
-            _PavoExpression::Fun(args, body) => _Expression::Fun(desugar_fun(args, body)),
-        })
-    }
+            BinOp::Subtract => _Expression::Builtin2(
+                W(builtins::int_bin_minus),
+                Box::new(desugar_exp(*lhs)?),
+                Box::new(desugar_exp(*rhs)?),
+            ),
+        }
+        _PavoExpression::Array(inners) => {
+            let mut desugared = Vec::with_capacity(inners.len());
+
+            for inner in inners.into_iter() {
+                desugared.push(desugar_exp(inner)?);
+            }
+
+            _Expression::BuiltinMany(
+                W(builtins::arr_new),
+                desugared
+            )
+        }
+        _PavoExpression::Fun(args, body) => _Expression::Fun(desugar_fun(args, body)?),
+    }))
 }
 
-impl From<Box<PavoExpression>> for Box<Expression> {
-    fn from(stmt: Box<PavoExpression>) -> Self {
-        Box::new((*stmt).into())
-    }
-}
-
-fn desugar_fun(args: OuterArrayPattern, body: Vec<PavoStatement>) -> Vec<Statement> {
+fn desugar_fun(args: OuterArrayPattern, body: Vec<PavoStatement>) -> Result<Vec<Statement>, PatternError> {
     let mut stmts = vec![Statement::let_(Id::pat(0), false, Expression::args())];
 
-    do_desugar_binder_outer_array_pattern(args, &mut stmts, 0);
-    do_desugar_statements(body, &mut stmts);
+    do_desugar_binder_outer_array_pattern(args, &mut stmts, Some(0));
+    do_desugar_statements(body, &mut stmts)?;
 
-    stmts
+    Ok(stmts)
 }
 
-pub fn desugar_statements(stmts: Vec<PavoStatement>) -> Vec<Statement> {
+pub fn desugar_statements(stmts: Vec<PavoStatement>) -> Result<Vec<Statement>, PatternError> {
     let mut buf = vec![];
-    do_desugar_statements(stmts, &mut buf);
-    buf
+    do_desugar_statements(stmts, &mut buf)?;
+    Ok(buf)
 }
 
-fn do_desugar_statements(stmts: Vec<PavoStatement>, buf: &mut Vec<Statement>) {
+fn do_desugar_statements(stmts: Vec<PavoStatement>, buf: &mut Vec<Statement>) -> Result<(), PatternError> {
     for stmt in stmts.into_iter() {
-        desugar_statement(stmt, buf);
+        desugar_statement(stmt, buf)?;
     }
+    Ok(())
 }
 
-fn desugar_statement(stmt: PavoStatement, buf: &mut Vec<Statement>) {
+fn desugar_statement(stmt: PavoStatement, buf: &mut Vec<Statement>) -> Result<(), PatternError> {
     match stmt.1 {
-        _PavoStatement::Expression(exp) => buf.push(Statement(
-            stmt.0, _Statement::Expression(exp.into())
-        )),
-        _PavoStatement::Return(exp) => buf.push(Statement(
-            stmt.0, _Statement::Return(exp.into())
-        )),
-        _PavoStatement::Break(exp) => buf.push(Statement(
-            stmt.0, _Statement::Break(exp.into())
-        )),
-        _PavoStatement::Throw(exp) => buf.push(Statement(
-            stmt.0, _Statement::Throw(exp.into())
-        )),
+        _PavoStatement::Expression(exp) => Ok(buf.push(Statement(
+            stmt.0, _Statement::Expression(desugar_exp(exp)?)
+        ))),
+        _PavoStatement::Return(exp) => Ok(buf.push(Statement(
+            stmt.0, _Statement::Return(desugar_exp(exp)?)
+        ))),
+        _PavoStatement::Break(exp) => Ok(buf.push(Statement(
+            stmt.0, _Statement::Break(desugar_exp(exp)?)
+        ))),
+        _PavoStatement::Throw(exp) => Ok(buf.push(Statement(
+            stmt.0, _Statement::Throw(desugar_exp(exp)?)
+        ))),
         _PavoStatement::Let(pat, rhs) => {
             buf.push(Statement(
                 stmt.0,
-                _Statement::Let { id: Id::pat(0), mutable: false, rhs: rhs.into() }
+                _Statement::Let { id: Id::pat(0), mutable: false, rhs: desugar_exp(rhs)? }
             ));
-            desugar_binder_pattern(pat, buf);
+            desugar_binder_patterns(pat, buf, false)
         }
-        _PavoStatement::Assign(id, exp) => buf.push(Statement(
-            stmt.0, _Statement::Assign(id, exp.into())
-        )),
+        _PavoStatement::Assign(id, exp) => Ok(buf.push(Statement(
+            stmt.0, _Statement::Assign(id, desugar_exp(exp)?)
+        ))),
         _PavoStatement::Rec(defs) => {
-            buf.push(Statement(
+            let mut desugared = Vec::with_capacity(defs.len());
+
+            for (id, args, body) in defs.into_iter() {
+                desugared.push((id, desugar_fun(args, body)?));
+            }
+
+            Ok(buf.push(Statement(
                 stmt.0,
-                _Statement::Rec(defs.into_iter().map(|(id, args, body)| {
-                    (id, desugar_fun(args, body))
-                }).collect())
-            ))
+                _Statement::Rec(desugared)
+            )))
         }
     }
 }
 
-fn desugar_binder_pattern(pat: BinderPattern, buf: &mut Vec<Statement>) {
-    do_desugar_binder_pattern(pat, buf, 0)
+fn desugar_binder_patterns(pats: BinderPatterns, buf: &mut Vec<Statement>, thrown: bool) -> Result<(), PatternError> {
+    if pats.1.len() == 1 {
+        let _ = pats.1[0].bindings()?;
+        do_desugar_binder_pattern(pats.1[0].clone(), buf, if thrown {None} else {Some(0)});
+        if let Some(guard) = pats.2 {
+            buf.push(Statement::exp(Expression::if_(
+                Box::new(desugar_exp(*guard)?),
+                vec![],
+                vec![Statement::throw_(Expression::nil())]
+            )))
+        }
+        Ok(())
+    } else {
+        // Check that all patterns bind the same identifiers (including identical mutability)
+        let names_to_bind = pats.1[0].bindings()?;
+        for pat in pats.1.iter() {
+            if pat.bindings()? != names_to_bind {
+                return Err(PatternError::Missing(pat.0));
+            }
+        }
+
+        // desugar `pat0 | pat1 if guard` (with names_to_bind a and mut b) to
+        //  let [a, mut b] = try {
+        //    let pat0 = ß0; [a, b]
+        //  } catch _ {
+        //    try {
+        //      let pat1 = ß0; [a, b]
+        //    } catch _ {
+        //      throw nil
+        //    }
+        //  }
+        //  if guard {} else { throw nil }
+
+        let arr_of_ids = PavoExpression::array(names_to_bind.iter().map(
+            |(id, _)| PavoExpression::id(id)
+        ).collect());
+
+        let bps = BinderPatterns(pats.0, vec![BinderPattern::arr_from_ids(&names_to_bind)], None);
+        let rhs = pats.1.into_iter().rev()
+            .map(|pat| vec![
+                    PavoStatement(SrcLocation::default(), _PavoStatement::Let(
+                        BinderPatterns(SrcLocation::default(), vec![pat], None),
+                        PavoExpression(SrcLocation::default(), _PavoExpression::Id(Id::pat(0)))
+                    )),
+                    PavoStatement::exp(arr_of_ids.clone())
+                ])
+            .fold(
+                vec![PavoStatement::throw_nil()],
+                |acc, try_stmts| vec![PavoStatement::exp(PavoExpression::try_(
+                    try_stmts,
+                    BinderPatterns(SrcLocation::default(), vec![BinderPattern::blank()], None),
+                    acc,
+                    vec![]
+                ))]
+            );
+        let rhs = match &rhs[0].1 {
+            _PavoStatement::Expression(exp) => exp.clone(),
+            _ => unreachable!(),
+        };
+
+        desugar_statement(PavoStatement(pats.0, _PavoStatement::Let(bps, rhs)), buf)?;
+        // add guard if Some
+        if let Some(guard) = pats.2 {
+            buf.push(Statement::exp(Expression::if_(
+                Box::new(desugar_exp(*guard)?),
+                vec![],
+                vec![Statement::throw_(Expression::nil())]
+            )));
+        }
+        Ok(())
+    }
 }
 
-fn do_desugar_binder_pattern(pat: BinderPattern, buf: &mut Vec<Statement>, level: usize) {
+fn level_to_id(level: Option<usize>) -> Id {
+    match level {
+        Some(level) => Id::pat(level),
+        None => Id::caught(),
+    }
+}
+
+fn do_desugar_binder_pattern(pat: BinderPattern, buf: &mut Vec<Statement>, level: Option<usize>) {
     match pat.1 {
         _BinderPattern::Blank => { /* no-op */ },
         _BinderPattern::Id(id, mutable) => {
-            buf.push(Statement::let_(id, mutable, Expression::id(Id::pat(level))));
+            buf.push(Statement::let_(id, mutable, Expression::id(level_to_id(level))));
         }
         _BinderPattern::Array(p @ OuterArrayPattern(..)) => do_desugar_binder_outer_array_pattern(p, buf, level),
     }
 }
 
-fn do_desugar_binder_array_pattern(pat: ArrayPattern, buf: &mut Vec<Statement>, level: usize) {
+fn do_desugar_binder_array_pattern(pat: ArrayPattern, buf: &mut Vec<Statement>, level: Option<usize>) {
     match pat.1 {
         _ArrayPattern::Regular(inner) => do_desugar_binder_pattern(inner, buf, level),
         _ArrayPattern::QM(id, mutable) => {
-            buf.push(Statement::let_(id, mutable, Expression::id(Id::pat(level))));
+            buf.push(Statement::let_(id, mutable, Expression::id(level_to_id(level))));
         }
     }
 }
 
-fn do_desugar_binder_outer_array_pattern(OuterArrayPattern(src, p): OuterArrayPattern, buf: &mut Vec<Statement>, level: usize) {
+fn do_desugar_binder_outer_array_pattern(OuterArrayPattern(src, p): OuterArrayPattern, buf: &mut Vec<Statement>, level: Option<usize>) {
     buf.push(Statement::exp(Expression(src, _Expression::Builtin1(
         W(builtins::assert_arr),
-        Box::new(Expression::id(Id::pat(level)))
+        Box::new(Expression::id(level_to_id(level)))
     ))));
 
     let (open, named_remaining) = match p {
@@ -320,7 +448,7 @@ fn do_desugar_binder_outer_array_pattern(OuterArrayPattern(src, p): OuterArrayPa
                 buf.push(Statement(
                     inner.0,
                     _Statement::Let {
-                        id: Id::pat(level + 1),
+                        id: level_to_id(level.map(|lvl| lvl + 1)),
                         mutable: false,
                         rhs: Expression(src, _Expression::Builtin2(
                             if inner.is_regular() {
@@ -328,18 +456,18 @@ fn do_desugar_binder_outer_array_pattern(OuterArrayPattern(src, p): OuterArrayPa
                             } else {
                                 W(builtins::arr_get_or_nil)
                             },
-                            Box::new(Expression::id(Id::pat(level))),
+                            Box::new(Expression::id(level_to_id(level))),
                             Box::new(Expression::int_usize(i))
                         ))
                     }
                 ));
-                do_desugar_binder_array_pattern(inner, buf, level + 1);
+                do_desugar_binder_array_pattern(inner, buf, level.map(|lvl| lvl + 1));
             }
 
             if !open {
                 buf.push(Statement::exp(Expression(src, _Expression::Builtin2(
                     W(builtins::assert_arr_len_at_most),
-                    Box::new(Expression::id(Id::pat(level))),
+                    Box::new(Expression::id(level_to_id(level))),
                     Box::new(Expression::int_usize(num_inners))
                 ))));
             }
@@ -347,7 +475,7 @@ fn do_desugar_binder_outer_array_pattern(OuterArrayPattern(src, p): OuterArrayPa
             if let Some((id, mutable)) = named_remaining {
                 buf.push(Statement::let_(id.clone(), mutable, Expression(src, _Expression::Builtin2(
                     W(builtins::arr_splice_suffix_helpful),
-                    Box::new(Expression::id(Id::pat(level))),
+                    Box::new(Expression::id(level_to_id(level))),
                     Box::new(Expression::int_usize(num_inners))
                 ))));
             }

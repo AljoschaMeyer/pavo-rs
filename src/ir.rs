@@ -193,6 +193,7 @@ impl PartialOrd for Entry {
 /// Converts an abstract syntax tree into an `IrChunk`.
 pub fn ast_to_ir(ast: Vec<Statement>) -> IrChunk {
     let mut bbb = BBB::new();
+    // println!("{:#?}", ast);
     block_to_ir(ast, BB_RETURN, true, &mut bbb, &Tails::empty());
     return bbb.into_ir();
 }

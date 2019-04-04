@@ -124,7 +124,7 @@ The syntax for assignment is `some_identifier = some_expression`. The identifier
 
 #### Let
 
-The syntax for let statements is `let some_binder_pattern = some_expression`. The let statement evaluates the expression and then binds the identifiers in the binder pattern according to the resulting value. The statement itself evaluates to `nil`.
+The syntax for let statements is `let some_binder_patterns = some_expression`. The let statement evaluates the expression and then binds the identifiers in the binder patterns according to the resulting value. The statement itself evaluates to `nil`.
 
 #### Rec
 
@@ -166,7 +166,9 @@ check_odd(49999) && check_even(50000) # true
 
 ### Binder Patterns
 
-Binder patterns are used to destructure expressions into subcomponents and bind these subcomponents to names. All mechanisms in pavo that introduce bound identifiers (`let` bindings, `catch` clauses and function arguments) do so via patterns.
+Binder patterns are used to destructure expressions into subcomponents and bind these subcomponents to names. All mechanisms in pavo that introduce bound identifiers (`let` bindings, `catch` clauses, `case` and `loop` expressions, and function arguments) do so via patterns.
+
+No single pattern may bind the same identifier multiple times, so e.g `let [a, a] = nil` would be a syntax error.
 
 #### Blank Pattern
 
@@ -248,6 +250,22 @@ let [a?, b...] = [] # a == nil and b == []
 let [a?, b...] = [true] # a == true and b == []
 ```
 
+### Pattern Lists and Guards
+
+`let` bindings, `catch` clauses, `case` expressions and `loop` expressions actually accept a list of one or more patterns, separated by `|`, optionally followed by a guard `if guard_exp`. The pattern list matches if any of its patterns matches, and if the `guard_exp` evaluates truthy. In a pattern list, all patterns must bind the same set of identifiers with the same mutabilities.
+
+```pavo
+let [x] | x = false; # binds x to false
+let y if false = true; # throws since the guard evaluates falsey
+let [x] | x if x = true; # binds x to true, the guard evaluates to true so it works
+let [x] | x if x = false; # throws since the guard evaluates falsey
+```
+
+```pavo
+let x | y = nil; # this does not compile, all patterns must bind the same names
+let x | mut x = nil; # this does not compile, all names must be bound with the same mutability
+```
+
 ### Expressions
 
 Expressions can be wrapped in parentheses without changing their semantics. This can be used to override operator precedences.
@@ -326,7 +344,7 @@ try {
 All operators in pavo are left-associative. The list of operator precendeces, from higher to lower precedence (operators in the same row have equal precedence):
 
 - function invocation (`fun(args)`)
-- "method" syntax (`arg1::fun_id(args)`)
+- "method" syntax (`arg1::method_exp(args)`)
 - `?`
 - `==`
 - `&&`, `||`
@@ -339,7 +357,24 @@ An expression followed by an opening paren, followed by any number of expression
 
 ##### "Method" Syntax
 
-`exp::some_id(args)` is equivalent to `some_id(exp, args)`.
+`exp::method_exp(args)` is equivalent to `method_exp(exp, args)`. The `method_exp` can not be an arbitrary expressions, as that would lead to syntactic ambiguatity. `method_exp` must be one of:
+
+- any expression that is not left-recursive
+- a field access on a method_exp
+- indexing into a method_exp
+
+```pavo
+# The following examples are valid:
+a::b();
+a::b.c[d](e, f);
+
+# These are invalid:
+a::b::c()(z)
+a::b || c(z)
+
+# This one is valid:
+a::b(c)(d) # parsed as (a::b(c))(d)
+```
 
 ##### `?` (Questionmark Operator)
 

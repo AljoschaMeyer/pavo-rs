@@ -238,8 +238,9 @@ fn do_analyze_statement(stmt: LightStatement, s: &mut Stack, tail: bool) -> Resu
             stmt.0, _Statement::Throw(do_analyze_exp(exp, s, false)?)
         )),
         _LightStatement::Let { id, mutable, rhs } => {
+            let rhs = do_analyze_exp(rhs, s, false)?;
             let binding_id = s.add_binding(&id.0, mutable);
-            Ok(Statement(stmt.0, _Statement::Assign(DeBruijn { up: 0, id: binding_id}, do_analyze_exp(rhs, s, false)?)))
+            Ok(Statement(stmt.0, _Statement::Assign(DeBruijn { up: 0, id: binding_id}, rhs)))
         },
         _LightStatement::Assign(id, rhs) => {
             let binding_id = s.resolve_binding(&id, true)?;

@@ -22,6 +22,7 @@ mod toplevel;
 mod gc_foreign;
 
 use binding_analysis::AnalysisError;
+use syntax_light::PatternError;
 use context::{Computation, Context, PavoResult};
 use parse::ParseError;
 
@@ -29,6 +30,8 @@ use parse::ParseError;
 pub enum StaticError {
     #[fail(display = "malformed input file, error during parsing")]
     Parse(#[fail(cause)] ParseError),
+    #[fail(display = "error detected in a pattern")]
+    Pattern(#[fail(cause)] PatternError),
     #[fail(display = "error detected during static analysis")]
     Analysis(#[fail(cause)] AnalysisError),
 }
@@ -36,6 +39,12 @@ pub enum StaticError {
 impl From<ParseError> for StaticError {
     fn from(err: ParseError) -> Self {
         StaticError::Parse(err)
+    }
+}
+
+impl From<PatternError> for StaticError {
+    fn from(err: PatternError) -> Self {
+        StaticError::Pattern(err)
     }
 }
 
@@ -47,7 +56,7 @@ impl From<AnalysisError> for StaticError {
 
 pub fn execute_pavo<'s>(src: &'s str) -> Result<PavoResult, StaticError> {
     let ast = parse::script(LocatedSpan::new(CompleteStr(src)))?;
-    let desugared = syntax_light::desugar_statements(ast);
+    let desugared = syntax_light::desugar_statements(ast)?;
     let analyzed = binding_analysis::analyze_statements(desugared, toplevel::BINDINGS)?;
     let ir_chunk = ir::ast_to_ir(analyzed);
     let main = ir::Closure::from_script_chunk(ir_chunk);
@@ -61,6 +70,7 @@ mod tests {
     use super::{execute_pavo, StaticError};
     use super::value::Value;
     use super::binding_analysis::AnalysisError;
+    use super::syntax_light::PatternError;
 
     fn assert_pavo_ok(src: &str, expected: Value) {
         match execute_pavo(src) {
@@ -223,6 +233,22 @@ mod tests {
     fn test_method() {
         assert_pavo_thrown("let x = false; true::x(nil, true)", Value::new_nil());
         assert_pavo_thrown("let x = false; true::x()", Value::new_nil());
+
+        assert_pavo_ok("42::eq(42)", Value::new_bool(true));
+        assert_pavo_ok("42::eq(42)::eq(true)", Value::new_bool(true));
+        assert_pavo_thrown("42::eq(42)(false)", Value::new_nil());
+
+        match execute_pavo("a::b::c()(z)").unwrap_err() {
+            StaticError::Parse(_) => {},
+            _ => panic!(),
+        }
+
+        match execute_pavo("a::b || c(z)").unwrap_err() {
+            StaticError::Parse(_) => {},
+            _ => panic!(),
+        }
+
+        // TODO a::b.c(d) is ok, as is a::b[c](d)
     }
 
     #[test]
@@ -350,5 +376,45 @@ mod tests {
         check_odd(49999) && check_even(50000)", Value::new_bool(true));
 
         assert_pavo_ok("rec {}", Value::new_nil());
+    }
+
+    #[test]
+    fn test_patterns() {
+        match execute_pavo("let [x, x] = nil").unwrap_err() {
+            StaticError::Pattern(PatternError::Duplicate(..)) => {},
+            _ => panic!(),
+        }
+
+        match execute_pavo("let [a, [_, a]] = nil").unwrap_err() {
+            StaticError::Pattern(PatternError::Duplicate(..)) => {},
+            other => {
+                println!("{:?}", other);
+                panic!()
+            }
+        }
+
+        match execute_pavo("let [x, mut x] = nil").unwrap_err() {
+            StaticError::Pattern(PatternError::Duplicate(..)) => {},
+            _ => panic!(),
+        }
+
+        match execute_pavo("let x | y = nil").unwrap_err() {
+            StaticError::Pattern(PatternError::Missing(..)) => {},
+            _ => panic!(),
+        }
+
+        match execute_pavo("let x | mut x = nil").unwrap_err() {
+            StaticError::Pattern(PatternError::Missing(..)) => {},
+            _ => panic!(),
+        }
+
+        assert_pavo_ok("let x | x = true; x", Value::new_bool(true));
+        assert_pavo_ok("let x | [x] = true; x", Value::new_bool(true));
+        assert_pavo_ok("let [x] | x = true; x", Value::new_bool(true));
+        assert_pavo_ok("let x = false; let [x] | x = true; x", Value::new_bool(true));
+
+        assert_pavo_ok("let x = false; let [[x]] | [x] = [true]; x", Value::new_bool(true));
+        assert_pavo_ok("let x = false; let [[x]] | [x] if true = [true]; x", Value::new_bool(true));
+        assert_pavo_thrown("let x = false; let [[x]] | [x] if false = [true]; x", Value::new_nil());
     }
 }
