@@ -189,16 +189,21 @@ named!(exp_bool(Span) -> Expression, do_parse!(
 ));
 
 fn hex_int<'a>(i: Span<'a>) -> IResult<Span<'a>, (SrcLocation, i64)> {
-    let (i, (pos, digits)) = try_parse!(i, do_parse!(
+    let (i, (pos, digits, is_negative)) = try_parse!(i, do_parse!(
         pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+        is_negative: map!(opt!(tag!("-")), |tmp| tmp.is_some()) >>
         tag!("0x") >>
         digits: is_a!("0123456789abcdefABCDEF_") >>
         ws0 >>
-        ((pos, digits))
+        ((pos, digits, is_negative))
     ));
 
+    let raw = std::iter::once(if is_negative { '-' } else { '+' }).chain(
+        digits.fragment.0.chars().filter(|ch| *ch != '_')
+    ).collect::<String>();
+
     match i64::from_str_radix(
-        &digits.fragment.0.chars().filter(|ch| *ch != '_').collect::<String>(),
+        &raw,
         16
     ) {
         Ok(n) => Ok((i, (pos, n))),
@@ -207,15 +212,20 @@ fn hex_int<'a>(i: Span<'a>) -> IResult<Span<'a>, (SrcLocation, i64)> {
 }
 
 fn dec_int<'a>(i: Span<'a>) -> IResult<Span<'a>, (SrcLocation, i64)> {
-    let (i, (pos, digits)) = try_parse!(i, do_parse!(
+    let (i, (pos, digits, is_negative)) = try_parse!(i, do_parse!(
         pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+        is_negative: map!(opt!(tag!("-")), |tmp| tmp.is_some()) >>
         digits: is_a!("0123456789_") >>
         ws0 >>
-        ((pos, digits))
+        ((pos, digits, is_negative))
     ));
 
+    let raw = std::iter::once(if is_negative { '-' } else { '+' }).chain(
+        digits.fragment.0.chars().filter(|ch| *ch != '_')
+    ).collect::<String>();
+
     match i64::from_str_radix(
-        &digits.fragment.0.chars().filter(|ch| *ch != '_').collect::<String>(),
+        &raw,
         10
     ) {
         Ok(n) => Ok((i, (pos, n))),
@@ -671,9 +681,31 @@ fn outer_array_pattern(inners: Vec<ArrayPattern>, remaining: Option<ArrayRemaini
     }
 }
 
+named!(binder_nil(Span) -> BinderPattern, do_parse!(
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+    kw!("nil") >>
+    (BinderPattern(pos, _BinderPattern::Nil))
+));
+
+named!(binder_bool(Span) -> BinderPattern, do_parse!(
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+    b: alt!(value!(true, kw!("true")) | value!(false, kw!("false"))) >>
+    (BinderPattern(pos, _BinderPattern::Bool(b)))
+));
+
+named!(binder_hex_int(Span) -> BinderPattern, map!(hex_int, |(pos, n)| BinderPattern(pos, _BinderPattern::Int(n))));
+named!(binder_dec_int(Span) -> BinderPattern, map!(dec_int, |(pos, n)| BinderPattern(pos, _BinderPattern::Int(n))));
+
+named!(binder_num(Span) -> BinderPattern, alt!(
+    binder_hex_int | binder_dec_int
+));
+
 named!(binder_pat(Span) -> BinderPattern, alt!(
     binder_id |
     binder_blank |
+    binder_nil |
+    binder_bool |
+    binder_num |
     binder_outer_array
 ));
 

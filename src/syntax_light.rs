@@ -105,6 +105,13 @@ impl Expression {
         )
     }
 
+    fn int(n: i64) -> Expression {
+        Expression(
+            SrcLocation::default(),
+            _Expression::Int(n)
+        )
+    }
+
     fn int_usize(n: usize) -> Expression {
         Expression(
             SrcLocation::default(),
@@ -412,6 +419,39 @@ fn do_desugar_binder_pattern(pat: BinderPattern, buf: &mut Vec<Statement>, level
         _BinderPattern::Blank => { /* no-op */ },
         _BinderPattern::Id(id, mutable) => {
             buf.push(Statement::let_(id, mutable, Expression::id(level_to_id(level))));
+        }
+        _BinderPattern::Nil => {
+            buf.push(Statement::exp(Expression::if_(
+                Box::new(Expression(SrcLocation::default(), _Expression::Builtin2(
+                    W(builtins::eq),
+                    Box::new(Expression::id(level_to_id(level))),
+                    Box::new(Expression::nil())
+                ))),
+                vec![],
+                vec![Statement::throw_(Expression::nil())]
+            )));
+        }
+        _BinderPattern::Bool(b) => {
+            buf.push(Statement::exp(Expression::if_(
+                Box::new(Expression(SrcLocation::default(), _Expression::Builtin2(
+                    W(builtins::eq),
+                    Box::new(Expression::id(level_to_id(level))),
+                    Box::new(Expression::bool_(b))
+                ))),
+                vec![],
+                vec![Statement::throw_(Expression::nil())]
+            )));
+        }
+        _BinderPattern::Int(n) => {
+            buf.push(Statement::exp(Expression::if_(
+                Box::new(Expression(SrcLocation::default(), _Expression::Builtin2(
+                    W(builtins::eq),
+                    Box::new(Expression::id(level_to_id(level))),
+                    Box::new(Expression::int(n))
+                ))),
+                vec![],
+                vec![Statement::throw_(Expression::nil())]
+            )));
         }
         _BinderPattern::Array(p @ OuterArrayPattern(..)) => do_desugar_binder_outer_array_pattern(p, buf, level),
     }

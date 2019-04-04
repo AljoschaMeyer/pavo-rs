@@ -24,7 +24,7 @@ The `bool` type holds two values: `true` and `false` (which are also the literal
 
 Integers are 64 bit signed integers, capable of representing all values between `- 2^63` and `2^63 - 1` (inclusive). Integer literals can be written in two forms: Either as a sequence of decimal digits and underscores, or as the prefix `0x` followed by a sequence of hexadecimal digits (both lower case and upper case letters are fine) and underscores. Underscores are ignored when converting into a number, they only serve as a readability aid. An integer literal can not begin with an underscore - such a construct would be parsed as an identifier instead.
 
-Integer literals are always positive, negative integers can be created with the unary `-` operator. Integer literals must be less than or equal to `2^63 - 1`, any greater (i.e. overflowing) literal is a syntax error. In particular, this means that the smallest possible integer (`−9223372036854775808`) can not be written this way as the (positive) literal is `2^63` and thus overflows. You can use the `TODO` toplevel value instead.
+Both form of integer literals can be prexifed with a minus (`-`) to yield a negative integer. If the number denoted by the literal is not between `- 2^63` and `2^63 - 1` (inclusive), it is a parser error.
 
 ### Arrays
 
@@ -209,6 +209,18 @@ if x {
 };
 x # still `true`, we never mutated the outermost binding
 ```
+
+#### Nil Pattern
+
+The nil pattern `nil` matches only the value `nil`.
+
+#### Bool Patterns
+
+The bool patterns `true` and `false` matches only the values `true` and `false` respectively.
+
+#### Int Patterns
+
+Integer patterns use the same syntax as integer literals (including the optional leading minus sign and the ability to write in hexadecimal). They match the int value denothed by the literal.
 
 #### Array Pattern
 

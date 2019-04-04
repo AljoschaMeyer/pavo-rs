@@ -89,7 +89,10 @@ pub struct BinderPattern(pub SrcLocation, pub _BinderPattern);
 pub enum _BinderPattern {
     Blank,
     Id(Id, bool), // true iff mutable
-    Array(OuterArrayPattern)
+    Nil,
+    Bool(bool),
+    Int(i64),
+    Array(OuterArrayPattern),
 }
 
 impl BinderPattern {
@@ -129,7 +132,8 @@ impl _BinderPattern {
     // Returns `Err` if an identifier is bound multiple times.
     fn add_bindings(&self, m: &mut BTreeSet<(String, bool)>) -> Result<(), Id> {
         match self {
-            _BinderPattern::Blank => Ok(()),
+            _BinderPattern::Blank | _BinderPattern::Nil |
+            _BinderPattern::Bool(..) | _BinderPattern::Int(..) => Ok(()),
             _BinderPattern::Id(id, mutable) => {
                 if !m.insert((id.0.clone(), *mutable)) {
                     Err(id.clone())

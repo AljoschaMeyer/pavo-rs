@@ -343,6 +343,22 @@ mod tests {
         assert_pavo_ok("3 - 7", Value::new_int(-4));
         assert_pavo_ok("100 - 10 - 1 == 89", Value::new_bool(true));
         assert_pavo_ok("0x__1_1__ == 1__7_", Value::new_bool(true));
+        assert_pavo_ok("-1", Value::new_int(-1));
+
+        match execute_pavo("- 1").unwrap_err() {
+            StaticError::Parse(_) => {},
+            _ => panic!(),
+        }
+
+        match execute_pavo("9999999999999999999999999999999999999999999999999999999999").unwrap_err() {
+            StaticError::Parse(_) => {},
+            _ => panic!(),
+        }
+
+        match execute_pavo("-999999999999999999999999999999999999999999999999999999999").unwrap_err() {
+            StaticError::Parse(_) => {},
+            _ => panic!(),
+        }
     }
 
     #[test]
@@ -380,6 +396,21 @@ mod tests {
 
     #[test]
     fn test_patterns() {
+        assert_pavo_ok("let nil = nil", Value::new_nil());
+        assert_pavo_thrown("let nil = true", Value::new_nil());
+
+        assert_pavo_ok("let true = true", Value::new_nil());
+        assert_pavo_thrown("let true = nil", Value::new_nil());
+
+        assert_pavo_ok("let false = false", Value::new_nil());
+        assert_pavo_thrown("let false = true", Value::new_nil());
+
+        assert_pavo_ok("let 42 = 42", Value::new_nil());
+        assert_pavo_thrown("let 42 = 43", Value::new_nil());
+
+        assert_pavo_ok("let -42 = 0 - 42", Value::new_nil());
+        assert_pavo_thrown("let -42 = -41", Value::new_nil());
+
         match execute_pavo("let [x, x] = nil").unwrap_err() {
             StaticError::Pattern(PatternError::Duplicate(..)) => {},
             _ => panic!(),
