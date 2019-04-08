@@ -22,7 +22,6 @@ mod toplevel;
 mod gc_foreign;
 
 use binding_analysis::AnalysisError;
-use syntax_light::PatternError;
 use context::{Computation, Context, PavoResult};
 use parse::ParseError;
 
@@ -30,8 +29,6 @@ use parse::ParseError;
 pub enum StaticError {
     #[fail(display = "malformed input file, error during parsing")]
     Parse(#[fail(cause)] ParseError),
-    #[fail(display = "error detected in a pattern")]
-    Pattern(#[fail(cause)] PatternError),
     #[fail(display = "error detected during static analysis")]
     Analysis(#[fail(cause)] AnalysisError),
 }
@@ -39,12 +36,6 @@ pub enum StaticError {
 impl From<ParseError> for StaticError {
     fn from(err: ParseError) -> Self {
         StaticError::Parse(err)
-    }
-}
-
-impl From<PatternError> for StaticError {
-    fn from(err: PatternError) -> Self {
-        StaticError::Pattern(err)
     }
 }
 
@@ -56,7 +47,7 @@ impl From<AnalysisError> for StaticError {
 
 pub fn execute_pavo<'s>(src: &'s str) -> Result<PavoResult, StaticError> {
     let ast = parse::script(LocatedSpan::new(CompleteStr(src)))?;
-    let desugared = syntax_light::desugar_statements(ast)?;
+    let desugared = syntax_light::desugar_stmts(ast);
     let analyzed = binding_analysis::analyze_statements(desugared, toplevel::BINDINGS)?;
     let ir_chunk = ir::ast_to_ir(analyzed);
     let main = ir::Closure::from_script_chunk(ir_chunk);
@@ -70,7 +61,6 @@ mod tests {
     use super::{execute_pavo, StaticError};
     use super::value::Value;
     use super::binding_analysis::AnalysisError;
-    use super::syntax_light::PatternError;
 
     fn assert_pavo_ok(src: &str, expected: Value) {
         match execute_pavo(src) {
@@ -301,6 +291,8 @@ mod tests {
         assert_pavo_thrown("let [a...] = false", Value::new_nil());
         assert_pavo_thrown("let [a, b, c...] = [false]", Value::new_nil());
         assert_pavo_thrown("let [[]] = [false]", Value::new_nil());
+
+        assert_pavo_ok("let [a..., b?, c = [false]; c", Value::new_bool(false));
     }
 
     #[test]
@@ -412,12 +404,12 @@ mod tests {
         assert_pavo_thrown("let -42 = -41", Value::new_nil());
 
         match execute_pavo("let [x, x] = nil").unwrap_err() {
-            StaticError::Pattern(PatternError::Duplicate(..)) => {},
+            StaticError::Analysis(AnalysisError::PatternDuplicate(..)) => {},
             _ => panic!(),
         }
 
         match execute_pavo("let [a, [_, a]] = nil").unwrap_err() {
-            StaticError::Pattern(PatternError::Duplicate(..)) => {},
+            StaticError::Analysis(AnalysisError::PatternDuplicate(..)) => {},
             other => {
                 println!("{:?}", other);
                 panic!()
@@ -425,17 +417,17 @@ mod tests {
         }
 
         match execute_pavo("let [x, mut x] = nil").unwrap_err() {
-            StaticError::Pattern(PatternError::Duplicate(..)) => {},
+            StaticError::Analysis(AnalysisError::PatternDuplicate(..)) => {},
             _ => panic!(),
         }
 
         match execute_pavo("let x | y = nil").unwrap_err() {
-            StaticError::Pattern(PatternError::Missing(..)) => {},
+            StaticError::Analysis(AnalysisError::PatternMissing(..)) => {},
             _ => panic!(),
         }
 
         match execute_pavo("let x | mut x = nil").unwrap_err() {
-            StaticError::Pattern(PatternError::Missing(..)) => {},
+            StaticError::Analysis(AnalysisError::PatternMissing(..)) => {},
             _ => panic!(),
         }
 
@@ -447,5 +439,25 @@ mod tests {
         assert_pavo_ok("let x = false; let [[x]] | [x] = [true]; x", Value::new_bool(true));
         assert_pavo_ok("let x = false; let [[x]] | [x] if true = [true]; x", Value::new_bool(true));
         assert_pavo_thrown("let x = false; let [[x]] | [x] if false = [true]; x", Value::new_nil());
+    }
+
+    #[test]
+    fn test_case() {
+        assert_pavo_thrown("case true {}", Value::new_nil());
+        assert_pavo_ok("case true { false => {throw nil}; _ => {42}}", Value::new_int(42));
+        assert_pavo_ok("case true { false => {throw nil}; _ => {42}; _ => {nil}}", Value::new_int(42));
+    }
+
+    #[test]
+    fn test_loop() {
+        assert_pavo_ok("loop true {}", Value::new_nil());
+        assert_pavo_ok("loop true { false => {42}}", Value::new_nil());
+        assert_pavo_ok("
+            let mut x = 0;
+            loop x {
+                0 => {x = 1; 17}
+                1 => {x = 2; 42}
+            }
+        ", Value::new_int(42));
     }
 }

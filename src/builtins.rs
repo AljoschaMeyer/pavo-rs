@@ -22,6 +22,18 @@ pub fn eq(a: &Value, b: &Value, _: &mut Context) -> PavoResult {
     Ok(Value::new_bool(a == b))
 }
 
+pub fn assert_eq(a: &Value, b: &Value, _: &mut Context) -> PavoResult {
+    if a == b {
+        Ok(Value::new_nil())
+    } else {
+        Err(Value::new_nil()) // XXX
+    }
+}
+
+pub fn truthy(v: &Value, _: &mut Context) -> PavoResult {
+    Ok(Value::new_bool(v.truthy()))
+}
+
 pub fn int_bin_minus(a: &Value, b: &Value, _: &mut Context) -> PavoResult {
     let a = as_int(a)?;
     let b = as_int(b)?;
@@ -52,18 +64,29 @@ pub fn arr_get(v: &Value, index: &Value, _: &mut Context) -> PavoResult {
     }
 }
 
-pub fn arr_get_or_nil(v: &Value, index: &Value, cx: &mut Context) -> PavoResult {
-    match arr_get(v, index, cx) {
-        Ok(yay) => Ok(yay),
-        Err(..) => Ok(Value::new_nil()),
-    }
-}
+// pub fn arr_get_or_nil(v: &Value, index: &Value, cx: &mut Context) -> PavoResult {
+//     match arr_get(v, index, cx) {
+//         Ok(yay) => Ok(yay),
+//         Err(..) => Ok(Value::new_nil()),
+//     }
+// }
+//
+// pub fn assert_arr_len_at_most(v: &Value, len: &Value, _: &mut Context) -> PavoResult {
+//     let arr = as_arr(v)?;
+//     let n = as_int(len)? as usize;
+//
+//     if arr.len() <= n {
+//         Ok(Value::new_nil())
+//     } else {
+//         Err(Value::new_nil()) // XXX
+//     }
+// }
 
-pub fn assert_arr_len_at_most(v: &Value, len: &Value, _: &mut Context) -> PavoResult {
+pub fn assert_arr_len_at_least(v: &Value, len: &Value, _: &mut Context) -> PavoResult {
     let arr = as_arr(v)?;
     let n = as_int(len)? as usize;
 
-    if arr.len() <= n {
+    if arr.len() >= n {
         Ok(Value::new_nil())
     } else {
         Err(Value::new_nil()) // XXX
@@ -81,20 +104,20 @@ pub fn assert_arr_len_at_most(v: &Value, len: &Value, _: &mut Context) -> PavoRe
 //     Ok(Value::new_array(arr.skip(n)))
 // }
 
-// This "helpfully" returns an empty array on index-out-of-bounds. Not exposed as a toplevel
-// function, but used in the desugaring of array patterns.
-pub fn arr_splice_suffix_helpful(v: &Value, from: &Value, _: &mut Context) -> PavoResult {
-    let arr = as_arr(v)?;
-    let n = as_int(from)? as usize;
-
-    if n > arr.len() {
-        return Ok(Value::new_array(Vector::new()))
-    }
-
-    Ok(Value::new_array(arr.skip(n)))
-}
-
-pub fn assert_arr(v: &Value, _: &mut Context) -> PavoResult {
-    let _ = as_arr(v)?;
-    Ok(Value::new_nil())
-}
+// // This "helpfully" returns an empty array on index-out-of-bounds. Not exposed as a toplevel
+// // function, but used in the desugaring of array patterns.
+// pub fn arr_splice_suffix_helpful(v: &Value, from: &Value, _: &mut Context) -> PavoResult {
+//     let arr = as_arr(v)?;
+//     let n = as_int(from)? as usize;
+//
+//     if n > arr.len() {
+//         return Ok(Value::new_array(Vector::new()))
+//     }
+//
+//     Ok(Value::new_array(arr.skip(n)))
+// }
+//
+// pub fn assert_arr(v: &Value, _: &mut Context) -> PavoResult {
+//     let _ = as_arr(v)?;
+//     Ok(Value::new_nil())
+// }

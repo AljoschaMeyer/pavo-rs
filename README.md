@@ -330,7 +330,7 @@ Evaluation of a while-expression begins by evaluating the *condition*. If it is 
 
 #### Try
 
-The syntax for try-expressions is `try { statements... } catch binder_pattern { statements...} finally { statements... }`, the `finally { statements... }` part is optional. The expressions starts evaluating the statements in the try-block. If any of them throws, the thrown value is matched against the binder pattern, and then the catch-block is executed. When execution reached the end of either the try-block or the catch-block, execution resumes with the finally-block. If the finally-block was omitted, the expressions behaves as if there was an empty finally-block. If the finally-block is empty, the try-expression evaluates to the result of the try-block if it didn't throw, or the result of the catch-block otherwise. If there is at least one statement in the finally-block, the expression evaluates to the result of the finally-block.
+The syntax for try-expressions is `try { statements... } catch binder_pattern { statements...} finally { statements... }`, the `finally { statements... }` part is optional. The expressions starts evaluating the statements in the try-block. If any of them throws, the thrown value is matched against the binder pattern, and then the catch-block is executed. When execution reached the end of either the try-block or the catch-block, execution resumes with the finally-block if present. The expression evaluates to the same value as the last executed block.
 
 ```pavo
 try {

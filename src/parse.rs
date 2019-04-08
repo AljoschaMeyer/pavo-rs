@@ -7,7 +7,7 @@ use nom::{
     {line_ending, not_line_ending, multispace1, eof},
     {value, tag, take_while1, one_of, is_a},
     {do_parse, alt, many0, many1, opt, fold_many0, many_m_n},
-    {delimited, separated_nonempty_list as nom_sep_nonempty_list, separated_list as nom_sep_list},
+    {delimited, separated_nonempty_list, separated_list},
     {named, not, map, try_parse, call},
     types::CompleteStr, IResult, Err, Context, ErrorKind,
 };
@@ -17,10 +17,9 @@ use crate::syntax::{
     Id,
     Expression, _Expression, BinOp,
     Statement, _Statement,
-    BinderPatterns,
-    BinderPattern, _BinderPattern,
-    OuterArrayPattern, _OuterArrayPattern,
-    ArrayPattern, _ArrayPattern,
+    Patterns,
+    Pattern, _Pattern,
+    ArrayPattern, ArrayPatternOptionals,
 };
 use crate::util::SrcLocation;
 
@@ -31,7 +30,7 @@ macro_rules! separated_list_trail(
     ($i:expr, $sep:ident!( $($args:tt)* ), $submac:ident!( $($args2:tt)* )) => ({
         do_parse!(
             $i,
-            ret: nom_sep_list!($sep!($($args)*), $submac!($($args2)*)) >>
+            ret: separated_list!($sep!($($args)*), $submac!($($args2)*)) >>
             opt!($sep!($($args)*)) >>
             (ret)
         )
@@ -52,7 +51,7 @@ macro_rules! separated_nonempty_list_trail(
     ($i:expr, $sep:ident!( $($args:tt)* ), $submac:ident!( $($args2:tt)* )) => ({
         do_parse!(
             $i,
-            ret: nom_sep_nonempty_list!($sep!($($args)*), $submac!($($args2)*)) >>
+            ret: separated_nonempty_list!($sep!($($args)*), $submac!($($args2)*)) >>
             opt!($sep!($($args)*)) >>
             (ret)
         )
@@ -114,7 +113,6 @@ named!(lparen(Span) -> (), do_parse!(tag!("(") >> ws0 >> (())));
 named!(rparen(Span) -> (), do_parse!(tag!(")") >> ws0 >> (())));
 named!(land(Span) -> (), do_parse!(tag!("&&") >> ws0 >> (())));
 named!(lor(Span) -> (), do_parse!(tag!("||") >> ws0 >> (())));
-named!(blank(Span) -> (), do_parse!(tag!("_") >> ws0 >> (())));
 named!(assign(Span) -> (), do_parse!(tag!("=") >> ws0 >> (())));
 named!(qm(Span) -> (), do_parse!(tag!("?") >> ws0 >> (())));
 named!(comma(Span) -> (), do_parse!(tag!(",") >> ws0 >> (())));
@@ -122,6 +120,7 @@ named!(coloncolon(Span) -> (), do_parse!(tag!("::") >> ws0 >> (())));
 named!(eq(Span) -> (), do_parse!(tag!("==") >> ws0 >> (())));
 named!(dots(Span) -> (), do_parse!(tag!("...") >> ws0 >> (())));
 named!(arrow(Span) -> (), do_parse!(tag!("->") >> ws0 >> (())));
+named!(fat_arrow(Span) -> (), do_parse!(tag!("=>") >> ws0 >> (())));
 named!(pipe(Span) -> (), do_parse!(tag!("|") >> ws0 >> (())));
 named!(minus(Span) -> (), do_parse!(tag!("-") >> not!(tag!(">")) >> ws0 >> (())));
 
@@ -167,7 +166,7 @@ fn is_kw(id: &str) -> bool {
     id == "nil" || id == "true" || id == "false" || id == "if" || id == "else" ||
     id == "return" || id == "break" || id == "while" || id == "mut" || id == "loop" ||
     id == "case" || id == "throw" || id == "try" || id == "catch" || id == "finally" ||
-    id == "async" || id == "await" || id == "for" || id == "let" || id == "rec"
+    id == "async" || id == "await" || id == "for" || id == "let" || id == "rec" || id == "_"
 }
 
 named!(exp_id(Span) -> Expression, do_parse!(
@@ -250,8 +249,7 @@ named!(exp_if(Span) -> Expression, do_parse!(
     kw!("if") >>
     cond: map!(exp, Box::new) >>
     if_block: block >>
-    else_block: map!(
-        opt!(do_parse!(
+    else_block: opt!(do_parse!(
             kw!("else") >>
             else_block: alt!(
                 block |
@@ -260,9 +258,7 @@ named!(exp_if(Span) -> Expression, do_parse!(
                 })
             ) >>
             (else_block)
-        )),
-        |blck| blck.unwrap_or(vec![])
-    ) >>
+        )) >>
     (Expression(pos, _Expression::If(cond, if_block, else_block)))
 ));
 
@@ -274,43 +270,68 @@ named!(exp_while(Span) -> Expression, do_parse!(
     (Expression(pos, _Expression::While(cond, loop_block)))
 ));
 
+named!(exp_case(Span) -> Expression, do_parse!(
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+    kw!("case") >>
+    matchee: map!(exp, Box::new) >>
+    lbrace >>
+    arms: separated_list_trail!(semi, do_parse!(
+        pats: patterns >>
+        fat_arrow >>
+        the_block: alt!(
+            block |
+            map!(exp_blocky, |e| {
+                vec![Statement(e.0, _Statement::Expression(e))]
+            })
+        ) >>
+        ((pats, the_block))
+    )) >>
+    rbrace >>
+    (Expression(pos, _Expression::Case(matchee, arms)))
+));
+
+named!(exp_loop(Span) -> Expression, do_parse!(
+    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
+    kw!("loop") >>
+    matchee: map!(exp, Box::new) >>
+    lbrace >>
+    arms: separated_list_trail!(semi, do_parse!(
+        pats: patterns >>
+        fat_arrow >>
+        the_block: alt!(
+            block |
+            map!(exp_blocky, |e| {
+                vec![Statement(e.0, _Statement::Expression(e))]
+            })
+        ) >>
+        ((pats, the_block))
+    )) >>
+    rbrace >>
+    (Expression(pos, _Expression::Loop(matchee, arms)))
+));
+
 named!(exp_try(Span) -> Expression, do_parse!(
     pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     kw!("try") >>
     try_block: block >>
     kw!("catch") >>
-    pats: binder_pats >>
+    pats: patterns >>
     catch_block: block >>
-    finally_block: map!(
-        opt!(do_parse!(
+    finally_block: opt!(do_parse!(
             kw!("finally") >>
             finally_block: block >>
             (finally_block)
-        )),
-        |blck| blck.unwrap_or(vec![])
-    ) >>
+        )) >>
     (Expression(pos, _Expression::Try(try_block, pats, catch_block, finally_block)))
 ));
 
 // Expressions that can follow an `else` keyword without being enclosed in braces.
 named!(exp_blocky(Span) -> Expression, alt!(
-    exp_if | exp_while | exp_try
+    exp_if | exp_while | exp_try | exp_case | exp_loop
 ));
 
-named!(fun(Span) -> (OuterArrayPattern, Vec<Statement>), do_parse!(
-    args: alt!(
-        do_parse!(
-            pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
-            lparen >>
-            rparen >>
-            (OuterArrayPattern(pos, _OuterArrayPattern::Closed(vec![])))
-        ) |
-        delimited!(
-            lparen,
-            outer_array_inners,
-            rparen
-        )
-    ) >>
+named!(fun(Span) -> (ArrayPattern, Vec<Statement>), do_parse!(
+    args: delimited!(lparen, pattern_array_inners, rparen) >>
     arrow >>
     body: block >>
     ((args, body))
@@ -532,7 +553,7 @@ named!(stmt_throw(Span) -> Statement, do_parse!(
 named!(stmt_let(Span) -> Statement, do_parse!(
     pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     kw!("let") >>
-    pats: binder_pats >>
+    pats: patterns >>
     assign >>
     expr: exp >>
     (Statement(pos, _Statement::Let(pats, expr)))
@@ -588,136 +609,127 @@ named!(stmts0(Span) -> Vec<Statement>, separated_list_trail!(semi, stmt));
 
 named!(block(Span) -> Vec<Statement>, delimited!(lbrace, stmts0, rbrace));
 
-named!(pattern_id(Span) -> (Id, bool), do_parse!(
+named!(pattern_id_raw(Span) -> (Id, bool), do_parse!(
     mutable: map!(opt!(kw!("mut")), |maybe| maybe.is_some()) >>
     binder: id >>
     ((binder, mutable))
 ));
 
-named!(binder_id(Span) -> BinderPattern, do_parse!(
+named!(pattern_id(Span) -> Pattern, do_parse!(
     pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
-    pat: map!(pattern_id, |(binder, mutable)| _BinderPattern::Id(binder, mutable)) >>
-    (BinderPattern(pos, pat))
+    pat: map!(pattern_id_raw, |(binder, mutable)| _Pattern::Id(binder, mutable)) >>
+    (Pattern(pos, pat))
 ));
 
-named!(binder_blank(Span) -> BinderPattern, do_parse!(
+named!(pattern_blank(Span) -> Pattern, do_parse!(
     pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
-    pat: value!(_BinderPattern::Blank, blank) >>
-    (BinderPattern(pos, pat))
+    pat: value!(_Pattern::Blank, kw!("_")) >>
+    (Pattern(pos, pat))
 ));
 
-named!(binder_outer_array(Span) -> BinderPattern, do_parse!(
+named!(pattern_array(Span) -> Pattern, do_parse!(
     pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
-    tmp: alt!(
-        do_parse!(
-            pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
-            lbracket >>
-            rbracket >>
-            (OuterArrayPattern(pos, _OuterArrayPattern::Closed(vec![])))
-        ) |
-        delimited!(
-            lbracket,
-            outer_array_inners,
-            rbracket
-        )
+    the_arr: delimited!(lbracket, pattern_array_inners, rbracket) >>
+    (Pattern(pos, _Pattern::Array(the_arr)))
+));
+
+named!(pattern_array_inners(Span) -> ArrayPattern, do_parse!(
+    left: separated_list!(comma, pattern) >>
+    opts: map!(
+        opt!(do_parse!(
+            comma >>
+            opts: pattern_array_optionals >>
+            (opts)
+        )),
+        |opts| match opts {
+            Some(opts) => opts,
+            None => ArrayPatternOptionals::empty(),
+        }
     ) >>
-    (BinderPattern(pos, _BinderPattern::Array(tmp)))
+    right: map!(
+        opt!(do_parse!(
+            comma >>
+            right: separated_list_trail!(comma, pattern) >>
+            (right)
+        )),
+        |right| match right {
+            Some(right) => right,
+            None => vec![]
+        }
+    ) >>
+    (ArrayPattern(left, opts, right))
 ));
 
-named!(outer_array_inners(Span) -> OuterArrayPattern, alt!(
+named!(pattern_array_optionals(Span) -> ArrayPatternOptionals, alt!(
     do_parse!(
-        pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
-        remaining: array_pattern_remaining >>
-        (OuterArrayPattern(pos, outer_array_pattern(vec![], Some(remaining))))
+        opts: separated_list!(comma, pattern_optional) >>
+        spread: opt!(do_parse!(
+            comma >>
+            spread: pattern_array_spread >>
+            (spread)
+        )) >>
+        opt!(comma) >>
+        (ArrayPatternOptionals::Left(opts, spread))
     ) |
     do_parse!(
-       pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
-       inners: separated_nonempty_list_trail!(comma, do_parse!(
-           p: array_pattern >>
-           not!(dots) >>
-           (p)
-       )) >>
-       remaining: opt!(do_parse!(
-           remaining: array_pattern_remaining >>
-           opt!(comma) >>
-           (remaining)
-       )) >>
-       (OuterArrayPattern(pos, outer_array_pattern(inners, remaining)))
-   )
+        spread: opt!(pattern_array_spread) >>
+        opts: do_parse!(
+            comma >>
+            opts: separated_list_trail!(comma, pattern_optional) >>
+            (opts)
+        ) >>
+        (ArrayPatternOptionals::Right(spread, opts))
+    )
 ));
 
-named!(array_pattern(Span) -> ArrayPattern, do_parse!(
-    pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
-    ret: alt!(
-        do_parse!(
-            id: pattern_id >>
-            qm >>
-            (_ArrayPattern::QM(id.0, id.1))
-        ) |
-        map!(binder_pat, _ArrayPattern::Regular)
-    ) >>
-    (ArrayPattern(pos, ret))
+named!(pattern_optional(Span) -> Pattern, do_parse!(
+    pat: pattern >>
+    qm >>
+    (pat)
 ));
 
-enum ArrayRemaining {
-    Anon,
-    Named(Id, bool),
-}
-
-named!(array_pattern_remaining(Span) -> ArrayRemaining, alt!(
-    do_parse!(
-        id: pattern_id >>
-        dots >>
-        (ArrayRemaining::Named(id.0, id.1))
-    ) |
-    value!(ArrayRemaining::Anon, dots)
+named!(pattern_array_spread(Span) -> Option<(Id, bool)>, alt!(
+    value!(None, dots) |
+    map!(pattern_id_raw, Some)
 ));
 
-fn outer_array_pattern(inners: Vec<ArrayPattern>, remaining: Option<ArrayRemaining>) -> _OuterArrayPattern {
-    match remaining {
-        None => _OuterArrayPattern::Closed(inners),
-        Some(ArrayRemaining::Anon) => _OuterArrayPattern::Open(inners),
-        Some(ArrayRemaining::Named(id, mutable)) => _OuterArrayPattern::OpenNamed(inners, id, mutable),
-    }
-}
-
-named!(binder_nil(Span) -> BinderPattern, do_parse!(
+named!(pattern_nil(Span) -> Pattern, do_parse!(
     pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     kw!("nil") >>
-    (BinderPattern(pos, _BinderPattern::Nil))
+    (Pattern(pos, _Pattern::Nil))
 ));
 
-named!(binder_bool(Span) -> BinderPattern, do_parse!(
+named!(pattern_bool(Span) -> Pattern, do_parse!(
     pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
     b: alt!(value!(true, kw!("true")) | value!(false, kw!("false"))) >>
-    (BinderPattern(pos, _BinderPattern::Bool(b)))
+    (Pattern(pos, _Pattern::Bool(b)))
 ));
 
-named!(binder_hex_int(Span) -> BinderPattern, map!(hex_int, |(pos, n)| BinderPattern(pos, _BinderPattern::Int(n))));
-named!(binder_dec_int(Span) -> BinderPattern, map!(dec_int, |(pos, n)| BinderPattern(pos, _BinderPattern::Int(n))));
+named!(pattern_hex_int(Span) -> Pattern, map!(hex_int, |(pos, n)| Pattern(pos, _Pattern::Int(n))));
+named!(pattern_dec_int(Span) -> Pattern, map!(dec_int, |(pos, n)| Pattern(pos, _Pattern::Int(n))));
 
-named!(binder_num(Span) -> BinderPattern, alt!(
-    binder_hex_int | binder_dec_int
+named!(pattern_num(Span) -> Pattern, alt!(
+    pattern_hex_int | pattern_dec_int
 ));
 
-named!(binder_pat(Span) -> BinderPattern, alt!(
-    binder_id |
-    binder_blank |
-    binder_nil |
-    binder_bool |
-    binder_num |
-    binder_outer_array
+named!(pattern(Span) -> Pattern, alt!(
+    pattern_id |
+    pattern_blank |
+    pattern_nil |
+    pattern_bool |
+    pattern_num |
+    pattern_array
 ));
 
-named!(binder_pats(Span) -> BinderPatterns, do_parse!(
+named!(patterns(Span) -> Patterns, do_parse!(
     pos: map!(position!(), |span| SrcLocation::from_span(&span)) >>
-    pats: separated_nonempty_list_trail!(pipe, binder_pat) >>
+    pats: separated_nonempty_list_trail!(pipe, pattern) >>
     guard: opt!(do_parse!(
         kw!("if") >>
         expr: exp >>
         (expr)
     )) >>
-    (BinderPatterns(pos, pats, guard.map(Box::new)))
+    (Patterns(pos, pats, guard.map(Box::new)))
 ));
 
 named!(p_script(Span) -> Vec<Statement>, do_parse!(

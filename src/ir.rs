@@ -12,7 +12,11 @@ use gc::{Gc, GcCell};
 use gc_derive::{Trace, Finalize};
 
 use crate::{
-    binding_analysis::{Statement, _Statement, Expression, _Expression, DeBruijn},
+    binding_analysis::{
+        Statement, _Statement, Expression, _Expression, DeBruijn,
+        Patterns, Pattern, _Pattern, ArrayPattern, ArrayPatternOptionals,
+    },
+    builtins,
     value::{Value, Fun},
     context::{Computation, Context, PavoResult},
     util::FnWrap as W,
@@ -50,7 +54,7 @@ enum Instruction {
     /// Create a closure value with the given IrChunk, push it to the stack.
     /// The BBId is the block at which to begin execution of the chunk.
     FunLiteral(Rc<IrChunk>, BBId),
-    /// Jump to the given basic block. If the usize is `BB_RETURN`, return from the function instead.
+    /// Jump to the given basic block. If the bb is `BB_RETURN`, return from the function instead.
     Jump(BBId),
     /// Jump to the first basic block if the value at the Addr is truthy, else to the second one.
     CondJump(Addr, BBId, BBId),
@@ -62,6 +66,10 @@ enum Instruction {
     Push(Addr),
     /// Pop the stack and write the value to the Addr.
     Pop(Addr),
+    /// Clone the topmost stack value and push it onto the stack.
+    Duplicate,
+    /// Drop the topmost stack value without writing it anywhere.
+    DropTop,
     /// Invoke the topmost value with the next `usize` many arguments. Remove them from the stack
     /// afterwards. If the bool is true, push the result onto the stack.
     ///
@@ -193,9 +201,15 @@ impl PartialOrd for Entry {
 /// Converts an abstract syntax tree into an `IrChunk`.
 pub fn ast_to_ir(ast: Vec<Statement>) -> IrChunk {
     let mut bbb = BBB::new();
-    // println!("{:#?}", ast);
-    block_to_ir(ast, BB_RETURN, true, &mut bbb, &Tails::empty());
+    fun_to_ir(ArrayPattern::empty(), ast, BB_RETURN, true, &mut bbb, &Tails::empty());
     return bbb.into_ir();
+}
+
+fn fun_to_ir(args: ArrayPattern, body: Vec<Statement>, jump_to: BBId, push: bool, bbb: &mut BBB, tails: &Tails) {
+    let body_bb = bbb.new_block();
+    array_pattern_to_ir(args, body_bb, bbb.trap_handler, bbb);
+    bbb.set_active_block(body_bb);
+    block_to_ir(body, jump_to, push, bbb, tails);
 }
 
 // Convert a sequence of statements into instructions and basic blocks, using the given BBB.
@@ -235,9 +249,11 @@ fn statement_to_ir(statement: Statement, push: bool, bbb: &mut BBB, tails: &Tail
             exp_to_ir(exp, true, bbb, tails);
             bbb.append(Throw);
         }
-        _Statement::Assign(de_bruijn, rhs) => {
+        _Statement::Assign(pats, rhs) => {
             exp_to_ir(rhs, true, bbb, tails);
-            bbb.append(Pop(Addr::env(de_bruijn)));
+            let cont_bb = bbb.new_block();
+            patterns_to_ir(pats, cont_bb, bbb.trap_handler, bbb, tails);
+            bbb.set_active_block(cont_bb);
             if push {
                 bbb.push_nil();
             }
@@ -259,19 +275,19 @@ fn statement_to_ir(statement: Statement, push: bool, bbb: &mut BBB, tails: &Tail
 }
 
 // Returns the chunk for the closure, and the entry points (in the same order as the defs)
-fn defs_to_chunk(defs: Vec<(DeBruijn, Vec<Statement>)>) -> (IrChunk, Vec<(DeBruijn, BBId)>) {
+fn defs_to_chunk(defs: Vec<(DeBruijn, ArrayPattern, Vec<Statement>)>) -> (IrChunk, Vec<(DeBruijn, BBId)>) {
     let mut bbb = BBB::new();
     let mut tc_info = Vec::with_capacity(defs.len());
-    let tails = Tails::from_de_bruijns(defs.iter().map(|(db, _)| db.clone()));
+    let tails = Tails::from_de_bruijns(defs.iter().map(|(db, _, _)| db.clone()));
 
-    for (db, body) in defs.into_iter() {
+    for (db, args, body) in defs.into_iter() {
         if bbb.current != 0 {
             let next = bbb.new_block();
             bbb.set_active_block(next);
         }
 
         tc_info.push((db, bbb.current));
-        block_to_ir(body, BB_RETURN, true, &mut bbb, &tails);
+        fun_to_ir(args, body, BB_RETURN, true, &mut bbb, &tails);
     }
 
     return (bbb.into_ir(), tc_info);
@@ -280,7 +296,6 @@ fn defs_to_chunk(defs: Vec<(DeBruijn, Vec<Statement>)>) -> (IrChunk, Vec<(DeBrui
 // Convert a single expression into instructions and basic blocks, using the given BBB.
 fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB, tails: &Tails) {
     match exp.1 {
-        _Expression::NoOp => {}
         _Expression::Nil => {
             if push {
                 bbb.push_nil();
@@ -296,9 +311,11 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB, tails: &Tails) {
                 bbb.append(Literal(Value::new_int(n)));
             }
         }
-        _Expression::Fun(body) => {
+        _Expression::Fun(args, body) => {
             if push {
-                bbb.append(FunLiteral(Rc::new(ast_to_ir(body)), 0));
+                let mut inner_bbb = BBB::new();
+                fun_to_ir(args, body, BB_RETURN, true, &mut inner_bbb, &Tails::empty());
+                bbb.append(FunLiteral(Rc::new(inner_bbb.into_ir()), 0));
             }
         }
         _Expression::Id(id) => {
@@ -306,56 +323,12 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB, tails: &Tails) {
                 bbb.append(Push(Addr::env(id)));
             }
         },
-        _Expression::If(cond, then_block, else_block) => {
-            exp_to_ir(*cond, true, bbb, tails);
-
-            let bb_then = bbb.new_block();
-            let bb_else = bbb.new_block();
-            let bb_cont = bbb.new_block();
-
-            bbb.append(CondJump(Addr::Stack, bb_then, bb_else));
-
-            bbb.set_active_block(bb_then);
-            block_to_ir(then_block, bb_cont, push, bbb, tails);
-
-            bbb.set_active_block(bb_else);
-            block_to_ir(else_block, bb_cont, push, bbb, tails);
-
-            bbb.set_active_block(bb_cont);
-        }
-        _Expression::While(cond, loop_block) => {
-            let bb_cond = bbb.new_block();
-            let bb_loop = bbb.new_block();
-            let bb_cont = bbb.new_block();
-
-            // Pretend there was a previous loop iteration that evaluated to `nil`, so that we
-            // evaluate to `nil` if the condition evaluates falsey at the first attempt.
-            if push {
-                bbb.push_nil();
-            }
-            // Evaluate the condition for the first time.
-            bbb.append(Jump(bb_cond));
-
-            // The block for evaluating the condition. It also ensures that we evaluate to the
-            // correct value.
-            bbb.set_active_block(bb_cond);
-            exp_to_ir(*cond, true, bbb, tails);
-            bbb.append(CondJump(Addr::Stack, bb_loop, bb_cont));
-
-            // The loop body, we save the old breakpoint and set the new one.
-            let prev_breakpoint = bbb.breakpoint;
-            bbb.breakpoint = bb_cont;
-            bbb.set_active_block(bb_loop);
-            block_to_ir(loop_block, bb_cond, push, bbb, tails);
-
-            bbb.set_active_block(bb_cont);
-            bbb.breakpoint = prev_breakpoint;
-        }
-        _Expression::Try(try_block, catch_block, finally_block) => {
+        _Expression::Try(try_block, pats, catch_block, finally_block) => {
             let bb_try = bbb.new_block();
             let bb_catch = bbb.new_block();
-            let bb_finally = bbb.new_block();
+            let bb_catch_body = bbb.new_block();
             let bb_cont = bbb.new_block();
+            let bb_finally = finally_block.as_ref().map(|_| bbb.new_block()).unwrap_or(bb_cont);
 
             bbb.append(Jump(bb_try));
             let prev_trap_handler = bbb.trap_handler;
@@ -367,18 +340,117 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB, tails: &Tails) {
             bbb.set_active_block(bb_catch);
             bbb.trap_handler = prev_trap_handler;
             bbb.append(SetCatchHandler(bbb.trap_handler));
+            patterns_to_ir(pats, bb_catch_body, bbb.trap_handler, bbb, tails);
+            bbb.set_active_block(bb_catch_body);
             block_to_ir(catch_block, bb_finally, push, bbb, tails);
 
             bbb.set_active_block(bb_finally);
             bbb.trap_handler = prev_trap_handler;
             bbb.append(SetCatchHandler(bbb.trap_handler));
-            if finally_block.len() > 0 {
-                block_to_ir(finally_block, bb_cont, push, bbb, tails);
+
+            if let Some(block) = finally_block {
+                block_to_ir(block, bb_cont, push, bbb, tails);
+                bbb.set_active_block(bb_cont);
+            }
+        }
+        _Expression::Case(matcher, arms) => {
+            let num_arms = arms.len();
+            exp_to_ir(*matcher, num_arms > 0, bbb, tails);
+
+            if num_arms == 0 {
+                bbb.append(DropTop); // drop the evaluated matcher
+                if push {
+                    bbb.push_nil();
+                }
             } else {
-                bbb.append(Jump(bb_cont));
+                // blocks[i].0: duplicate top of stack and match against pattern, going to
+                // blocks[i].1 (the arm's body) if matched, or to block[i+1].0 if it didn't match
+                let blocks: Vec<_> = arms.iter().map(|_| (bbb.new_block(), bbb.new_block())).collect();
+                let bb_cont = bbb.new_block();
+
+                bbb.append(Jump(blocks[0].0));
+                bbb.set_active_block(blocks[0].0);
+                for (i, (pats, body)) in arms.into_iter().enumerate() {
+                    if i < num_arms {
+                        if i > 0 {
+                            bbb.append(DropTop); // drops the exception of the previous, non-matching patterns
+                        }
+                        bbb.append(Duplicate); // duplicate the value to match against
+                        patterns_to_ir(pats, blocks[i].1, blocks[i + 1].0, bbb, tails);
+
+                        bbb.set_active_block(blocks[i].1);
+                        bbb.append(DropTop); // drop the duplicated value
+                        block_to_ir(body, bb_cont, push, bbb, tails);
+
+                        bbb.set_active_block(blocks[i + 1].0);
+                    } else {
+                        patterns_to_ir(pats, blocks[i].1, bbb.trap_handler, bbb, tails);
+
+                        bbb.set_active_block(blocks[i].1);
+                        block_to_ir(body, bb_cont, push, bbb, tails);
+                    }
+                }
+
+                bbb.set_active_block(bb_cont);
+            }
+        }
+        _Expression::Loop(matcher, arms) => {
+            let num_arms = arms.len();
+            let bb_matcher = bbb.new_block();
+
+            // pretend there was a previous loop iteration that returned nil (so that we evaluate
+            // to nil if no pattern matches in the first iteration)
+            if push {
+                bbb.push_nil();
             }
 
-            bbb.set_active_block(bb_cont);
+            bbb.set_active_block(bb_matcher);
+            exp_to_ir(*matcher, true, bbb, tails);
+
+            if num_arms == 0 {
+                bbb.append(DropTop); // drop the evaluated matcher
+            } else {
+                // blocks[i].0: duplicate top of stack and match against pattern, going to
+                // blocks[i].1 (the arm's body) if matched, or to block[i+1].0 if it didn't match
+                let blocks: Vec<_> = arms.iter().map(|_| (bbb.new_block(), bbb.new_block())).collect();
+                let bb_cont = bbb.new_block();
+
+                let prev_breakpoint = bbb.breakpoint;
+                bbb.breakpoint = bb_cont;
+
+                bbb.append(Jump(blocks[0].0));
+                bbb.set_active_block(blocks[0].0);
+
+                for (i, (pats, body)) in arms.into_iter().enumerate() {
+                    if i < num_arms {
+                        if i > 0 {
+                            bbb.append(DropTop); // drops the exception of the previous, non-matching pattern
+                        }
+                        bbb.append(Duplicate);
+                        patterns_to_ir(pats, blocks[i].1, blocks[i + 1].0, bbb, tails);
+
+                        bbb.set_active_block(blocks[i].1);
+                        bbb.append(DropTop); // drop the duplicated value
+                        if push {
+                            bbb.append(DropTop); // drop the result of the previous loop iteration
+                        }
+                        block_to_ir(body, bb_matcher, push, bbb, tails);
+
+                        bbb.set_active_block(blocks[i + 1].0);
+                    } else {
+                        patterns_to_ir(pats, blocks[i].1, bb_cont, bbb, tails);
+
+                        bbb.set_active_block(blocks[i].1);
+                        if push {
+                            bbb.append(DropTop); // drop the result of the previous loop iteration
+                        }
+                        block_to_ir(body, bb_cont, push, bbb, tails);
+                    }
+                }
+
+                bbb.set_active_block(bb_cont);
+                bbb.breakpoint = prev_breakpoint;
+            }
         }
         _Expression::Invocation(fun, args, tail) => {
             let num_args = args.len();
@@ -418,6 +490,99 @@ fn exp_to_ir(exp: Expression, push: bool, bbb: &mut BBB, tails: &Tails) {
             bbb.append(CallBuiltinMany(fun, num_args, push));
         }
     }
+}
+
+// Convert some patterns into instructions and basic blocks, using the given BBB.
+// Matches the patterns against the top of the stack. If successful, jumps to `yay`,
+// else pushes an error value to the stack and jumps to `nay`.
+//
+// bbb.active_block stays unmodified.
+fn patterns_to_ir(pats: Patterns, yay: BBId, nay: BBId, bbb: &mut BBB, tails: &Tails) {
+    let prev_active_block = bbb.current;
+    let num_pats = pats.1.len();
+    debug_assert!(num_pats > 0);
+
+    let blocks: Vec<_> = pats.1.iter().map(|_| bbb.new_block()).collect();
+    let bb_pre_yay = bbb.new_block();
+    let bb_pre_nay = bbb.new_block();
+
+    bbb.append(Jump(blocks[0]));
+    bbb.set_active_block(blocks[0]);
+
+    for (i, pat) in pats.1.into_iter().enumerate() {
+        if i < num_pats {
+            if i > 0 {
+                bbb.append(DropTop); // drops the exception of the previous, non-matching pattern
+            }
+            bbb.append(Duplicate);
+            pattern_to_ir(pat, bb_pre_yay, blocks[i + 1], bbb);
+            bbb.set_active_block(blocks[i + 1]);
+        } else {
+            bbb.append(Duplicate);
+            pattern_to_ir(pat, bb_pre_yay, bb_pre_nay, bbb);
+        }
+    }
+
+    bbb.set_active_block(bb_pre_yay);
+    bbb.append(DropTop);
+    match pats.2 {
+        Some(guard) => {
+            exp_to_ir(*guard, true, bbb, tails);
+            bbb.append(CondJump(Addr::Stack, yay, nay));
+        }
+        None => bbb.append(Jump(yay)),
+    }
+
+    bbb.set_active_block(bb_pre_nay);
+    bbb.append(DropTop);
+
+    bbb.set_active_block(prev_active_block);
+}
+
+// Consume the topmost stack element, matching it against the pattern. If successful, jumps to
+// `yay`, else pushes an error value to the stack and jumps to `nay`.
+//
+// bbb.active_block stays unmodified.
+fn pattern_to_ir(pat: Pattern, yay: BBId, nay: BBId, bbb: &mut BBB) {
+    let prev_active_block = bbb.current;
+    let prev_trap_handler = bbb.trap_handler;
+
+    bbb.trap_handler = nay;
+    match pat.1 {
+        _Pattern::Blank => bbb.append(Jump(yay)),
+        _Pattern::Nil => {
+            bbb.append(Literal(Value::new_nil()));
+            bbb.append(CallBuiltin2(W(builtins::assert_eq), false));
+            bbb.append(Jump(yay))
+        }
+        _Pattern::Array(ArrayPattern(left, opts, right)) => {
+            let left_len = left.len();
+            let right_len = right.len();
+
+            // Make sure it's an array and there are enough entries for all mandatory patterns
+            bbb.append(Duplicate); // FIXME duplicate is not dropped if anything throws
+            bbb.append(Literal(Value::new_int_usize(left_len + right_len)));
+            bbb.append(CallBuiltin2(W(builtins::assert_arr_len_at_least), false));
+
+            for (i, sub_pat) in left.into_iter().enumerate() {
+                bbb.append(Duplicate); // FIXME duplicate is not dropped if anything throws
+                bbb.append(Literal(Value::new_int_usize(i)));
+                bbb.append(CallBuiltin2(W(builtins::arr_get), true));
+                pattern_to_ir(sub_pat, TODO, TODO, bbb);
+            }
+
+            unimplemented!()
+        }
+        _ => unimplemented!(),
+    }
+
+    bbb.set_active_block(prev_active_block);
+    bbb.trap_handler = prev_trap_handler;
+}
+
+// Consume the topmost stack element, matching it against the ArrayPattern.
+fn array_pattern_to_ir(p: ArrayPattern, yay: BBId, nay: BBId, bbb: &mut BBB) {
+    pattern_to_ir(Pattern::array(p), yay, nay, bbb);
 }
 
 ///////////////////////////////////////////////
@@ -619,6 +784,14 @@ impl Computation for Closure {
                     let val = state.pop();
                     addr.store(val, &mut state, &self.env);
                 }
+
+                Duplicate => {
+                    let val = state.pop();
+                    state.push(val.clone());
+                    state.push(val);
+                }
+
+                DropTop => {let _ = state.pop();}
 
                 Call(num_args, push) => {
                     let fun = state.pop();
