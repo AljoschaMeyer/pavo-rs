@@ -1,3 +1,5 @@
+This has mutated into https://github.com/AljoschaMeyer/pavo-bootstrap
+
 # The Pavo Programming Language
 
 An imperative, dynamically typed, event-loop based programming language. Featuring immutable values and capability-based code loading.
